@@ -4,8 +4,7 @@
 # Principal Investigator: Dr. Aqeel Ahmed
 # ==============================================================================
 
-# 1. Clear Active Memory Workspace Environment
-rm(list = setdiff(ls(), "aml_matrix"))
+# 1. Clear Active Memory Workspace Environment Managed via R Project (.Rproj)
 
 # 2. Load Core Structural and Statistical Packages
 library(curatedTCGAData)
@@ -20,6 +19,11 @@ library(ggplot2)
 if (!exists("aml_matrix")) {
   message("Active aml_matrix object missing. Extracting from local workspace storage...")
   load("LUMHS_Hypoxia_Project_Workspace.RData")
+}
+
+# Ensure hidden workspace dependencies are present before proceeding
+if (!exists("clinical_data") | !exists("aml_clean_clinical")) {
+  stop("CRITICAL ERROR: Required underlying data objects (clinical_data or aml_clean_clinical) are missing from the workspace image.")
 }
 
 # 4. Initialize the Universally Validated 15-Gene Buffa Hypoxia Classifier Vector
@@ -115,20 +119,18 @@ final_plot <- ggsurvplot(
   tables.theme = theme_cleantable()
 )
 
-# Force display the perfect graph on screen
-# Render graph on screen and automatically write to disk
+# 15. Render graph cleanly to disk extracting the composite plot matrix elements
 png("Figure_1_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
 print(final_plot)
 dev.off()
 message("Figure 1 successfully generated and saved to your project directory!")
-
-
 # 15. Export Clean CSV Spreadsheet Table Data to Working Folder Disk
 write.csv(lumhs_master_data, "LUMHS_Global_Survival_Validated_Data.csv", row.names = FALSE)
 
-# 16. Lock and Save the Workspace Environment Binary File
-save.image(file = "LUMHS_Hypoxia_Project_Workspace.RData")
+# 16. Lock and Save the Workspace Environment Binary File (Non-Destructive)
+save.image(file = "LUMHS_Hypoxia_Project_Processed_Outputs.RData")
 message("--- SUCCESS: Master Pipeline executed with zero errors. RData and CSV saved. ---")
+
 ## =============================================================================
 ## PHASE 3: LOCAL TO GLOBAL CROSS-POPULATION COMPARISON (LUMHS VALIDATION)
 ## =============================================================================
@@ -137,6 +139,12 @@ message("--- SUCCESS: Master Pipeline executed with zero errors. RData and CSV s
 if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   local_data <- read.csv("LUMHS_Local_AML_Cohort.csv", na.strings = "NA")
   
+  required_columns <- c("bone_marrow_blast", "bone_marrow_neutrophil")
+  missing_cols <- setdiff(required_columns, colnames(local_data))
+  if (length(missing_cols) > 0) {
+    stop(paste("CRITICAL ERROR: The template is missing columns:", paste(missing_cols, collapse = ", ")))
+  }
+
   # Ensure there is actual data logged past row 1 to prevent empty array crashes
   if(nrow(local_data) > 1) {
     
@@ -169,35 +177,33 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     
     print("--- LOCAL SINDH COHORT CORRELATION RESULTS ---")
     print(local_spearman)
+    
     comp_scatterplot <- ggplot(local_data, aes(x = bone_marrow_blast, y = bone_marrow_neutrophil)) +
-  geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
-  geom_smooth(method = "lm", color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
-  theme_bw(base_size = 12) +
-  theme(
-    plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
-    plot.subtitle = element_text(size = 10, hjust = 0.5, face = "italic"),
-    panel.grid.minor = element_blank()
-  ) +
-  labs(
-    title = "Local Marrow Crowding Dynamics",
-    subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (p = ", format.pval(local_spearman$p.value, digits = 4), ")"),
-    x = "Bone Marrow Blast Infiltration (%)",
-    y = "Bone Marrow Mature Neutrophils (%)"
-  )
+      geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
+      geom_smooth(method = "lm", color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
+      theme_bw(base_size = 12) +
+      theme(
+        plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        plot.subtitle = element_text(size = 10, hjust = 0.5, face = "italic"),
+        panel.grid.minor = element_blank()
+      ) +
+      labs(
+        title = "Local Marrow Crowding Dynamics",
+        subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (p = ", format.pval(local_spearman$p.value, digits = 4), ")"),
+        x = "Bone Marrow Blast Infiltration (%)",
+        y = "Bone Marrow Mature Neutrophils (%)"
+      )
 
-ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
-print("Figure 3 successfully generated and saved to your project directory!")
+    ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
+    print("Figure 3 successfully generated and saved to your project directory!")
 
     # 7. Reshape data for publication-grade ggplot2 dual-panel visualization
-    library(tidyr)
-    library(ggplot2)
-    
     plotting_df <- combined_cohorts_df %>%
       tidyr::pivot_longer(cols = c(bone_marrow_blast, bone_marrow_neutrophil), 
                           names_to = "Parameter", values_to = "Percentage")
     
     # Create clean panel labels
-    panel_labels <- c(
+    panel_labels = c(
       "bone_marrow_blast" = "Bone Marrow Blast Infiltration (%)",
       "bone_marrow_neutrophil" = "Bone Marrow Mature Neutrophils (%)"
     )
