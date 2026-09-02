@@ -116,7 +116,12 @@ final_plot <- ggsurvplot(
 )
 
 # Force display the perfect graph on screen
+# Render graph on screen and automatically write to disk
+png("Figure_1_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
 print(final_plot)
+dev.off()
+message("Figure 1 successfully generated and saved to your project directory!")
+
 
 # 15. Export Clean CSV Spreadsheet Table Data to Working Folder Disk
 write.csv(lumhs_master_data, "LUMHS_Global_Survival_Validated_Data.csv", row.names = FALSE)
@@ -164,7 +169,25 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     
     print("--- LOCAL SINDH COHORT CORRELATION RESULTS ---")
     print(local_spearman)
-    
+    comp_scatterplot <- ggplot(local_data, aes(x = bone_marrow_blast, y = bone_marrow_neutrophil)) +
+  geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
+  geom_smooth(method = "lm", color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, face = "italic"),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Local Marrow Crowding Dynamics",
+    subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (p = ", format.pval(local_spearman$p.value, digits = 4), ")"),
+    x = "Bone Marrow Blast Infiltration (%)",
+    y = "Bone Marrow Mature Neutrophils (%)"
+  )
+
+ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
+print("Figure 3 successfully generated and saved to your project directory!")
+
     # 7. Reshape data for publication-grade ggplot2 dual-panel visualization
     library(tidyr)
     library(ggplot2)
