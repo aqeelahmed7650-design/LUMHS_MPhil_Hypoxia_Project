@@ -1,8 +1,8 @@
 # ==============================================================================
 # MASTER COMPILATION PIPELINE: COX-WEIGHTED 15-GENE BUFFA PROGNOSTIC MODEL
-# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (January 2027)
-# Principal Investigator: Dr. Aqeel Ahmed
-# Target Journal Submission: Scientific Reports (Nature Portfolio)
+# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (2027)
+# Principal Investigator: Dr. Aqeel Ahmed (MD)
+# Target Journal Submission: PLOS ONE (Technical Soundness Track)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -37,7 +37,6 @@ library(survival)
 library(survminer)
 library(ggplot2)
 
-# Set global deterministic seed for cross-platform statistical alignment
 set.seed(2027)
 
 # ------------------------------------------------------------------------------
@@ -46,17 +45,19 @@ set.seed(2027)
 message("Downloading raw TCGA-LAML multi-assay experiment data directly from API...")
 laml_mae <- curatedTCGAData::curatedTCGAData(disease = "LAML", assays = c("RNASeq2GeneNorm"), version = "2.0.1", dry.run = FALSE)
 
-# Programmatically extract relationships to link sample aliquots to primary individuals
+# FIXED: Dynamically target the exact internal assay registry name string to insulate against server modifications
+target_assay_name <- names(MultiAssayExperiment::assays(laml_mae))[1]
+
 assay_map <- as.data.frame(MultiAssayExperiment::sampleMap(laml_mae)) %>%
-  dplyr::filter(assay == "LAML_RNASeq2GeneNorm-20160128") %>%
+  dplyr::filter(assay == target_assay_name) %>%
   dplyr::mutate(colname = as.character(colname), primary = as.character(primary))
 
-raw_assay <- MultiAssayExperiment::assays(laml_mae)[]
+# FIXED: Replaced unsafe bracket-list indexing with the official matrix extraction engine method
+raw_assay <- MultiAssayExperiment::assay(laml_mae, 1)
 aml_matrix_raw <- as.data.frame(raw_assay)
 
-# Fallback safety step if row strings are hidden in row attributes
 if (length(rownames(aml_matrix_raw)) == 0) {
-  rownames(aml_matrix_raw) <- names(raw_assay[])
+  rownames(aml_matrix_raw) <- names(raw_assay)
 }
 
 clinical_data_raw <- as.data.frame(MultiAssayExperiment::colData(laml_mae))
@@ -67,9 +68,7 @@ clinical_data_raw$primary_id <- rownames(clinical_data_raw)
 buffa_15_genes <- c("ACOT7", "ADM", "ALDOA", "CDKN3", "ENO1", "LDHA", "MIF", 
                     "MRPS17", "NDRG1", "P4HA1", "PGAM1", "SLC2A1", "TPI1", "TUBB6", "VEGFA")
 
-# Cleanly extract gene symbols without missing-length array mismatch crashes
 aml_matrix_raw$gene_name <- sub("\\|.*", "", rownames(aml_matrix_raw))
-
 b15_matrix <- aml_matrix_raw[aml_matrix_raw$gene_name %in% buffa_15_genes, ]
 message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target features out of 15 Buffa genes."))
 
@@ -84,7 +83,6 @@ survival_base <- clinical_data_raw %>%
   ) %>%
   dplyr::filter(!is.na(time_days) & time_days > 0)
 
-# Priority-Cascading Fallback Registry Dictionary
 all_cols <- colnames(clinical_data_raw)
 blast_candidates <- c("percent_bone_marrow_blasts", "percent_blasts", 
                       "leukemia_blast_cell_cellularity_percentage", "bone_marrow_blasts")
@@ -109,12 +107,9 @@ aml_clean_clinical <- clinical_data_raw %>%
 # ------------------------------------------------------------------------------
 # 5. LONG TRANSFORMATION USING MULTI-ASSAY EXPERIMENT CONNECTIONS
 # ------------------------------------------------------------------------------
-# FIXED: Explicitly isolate columns that are valid TCGA patient barcodes.
-# This systematically discards "group", "group_name", or other metadata text structures.
 tcga_barcode_cols <- colnames(b15_matrix)[grepl("^TCGA|^LAML", colnames(b15_matrix), ignore.case = TRUE)]
 
 b15_long <- b15_matrix %>%
-  # Select only the gene name column and verified patient barcode columns
   dplyr::select(gene_name, dplyr::all_of(tcga_barcode_cols)) %>%
   tidyr::pivot_longer(
     cols = -gene_name, 
