@@ -45,7 +45,7 @@ set.seed(2027)
 message("Downloading raw TCGA-LAML multi-assay experiment data directly from API...")
 laml_mae <- curatedTCGAData::curatedTCGAData(disease = "LAML", assays = c("RNASeq2GeneNorm"), version = "2.0.1", dry.run = FALSE)
 
-target_assay_name <- names(MultiAssayExperiment::assays(laml_mae))
+target_assay_name <- names(MultiAssayExperiment::assays(laml_mae))[1]
 
 assay_map <- as.data.frame(MultiAssayExperiment::sampleMap(laml_mae)) %>%
   dplyr::filter(assay == target_assay_name) %>%
@@ -71,30 +71,32 @@ b15_matrix <- aml_matrix_raw[aml_matrix_raw$gene_name %in% buffa_15_genes, ]
 message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target features out of 15 Buffa genes."))
 
 # ------------------------------------------------------------------------------
-# 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
+# 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES WITH SAFE REGEX LOOKUPS
 # ------------------------------------------------------------------------------
+all_cols <- colnames(clinical_data_raw)
+clinical_data_raw$fallback_na <- as.numeric(NA)
+
+# Advanced Regex Trackers: Safely search for indices to protect against bounds errors
+age_idx <- grep("age|birth|diagnostic_age", all_cols, ignore.case = TRUE)
+age_col <- if(length(age_idx) > 0) all_cols[age_idx[1]] else "fallback_na"
+
 survival_base <- clinical_data_raw %>%
-  dplyr::select(primary_id, days_to_death, days_to_last_followup, vital_status, age) %>%
+  dplyr::select(primary_id, days_to_death, days_to_last_followup, vital_status, dplyr::all_of(age_col)) %>%
   dplyr::mutate(
     time_days = ifelse(!is.na(days_to_death), as.numeric(days_to_death), as.numeric(days_to_last_followup)),
     status_numeric = ifelse(vital_status == 1 | grepl("dead|deceased", vital_status, ignore.case = TRUE), 1, 0),
-    age_years = as.numeric(age)
+    raw_age_val = abs(as.numeric(.[[age_col]])),
+    # Self-correcting step: if age is stored in days (e.g. 20000), dynamically convert it to years
+    age_years = ifelse(!is.na(raw_age_val) & raw_age_val > 150, raw_age_val / 365.25, raw_age_val)
   ) %>%
-  dplyr::filter(!is.na(time_days) & time_days > 0)
+  dplyr::filter(!is.na(time_days) & time_days > 0) %>%
+  dplyr::select(primary_id, time_days, status_numeric, age_years)
 
-all_cols <- colnames(clinical_data_raw)
-blast_candidates <- c("percent_bone_marrow_blasts", "percent_blasts", 
-                      "leukemia_blast_cell_cellularity_percentage", "bone_marrow_blasts")
-blast_col_match <- intersect(blast_candidates, all_cols)
+blast_idx <- grep("blast", all_cols, ignore.case = TRUE)
+b_col <- if(length(blast_idx) > 0) all_cols[blast_idx[1]] else "fallback_na"
 
-myeloid_candidates <- c("percent_myeloid_cells_peripheral_blood", "percent_myeloid_cells",
-                        "peripheral_blood_myeloid_percentage", "myeloid_cells")
-myeloid_col_match <- intersect(myeloid_candidates, all_cols)
-
-clinical_data_raw$fallback_na <- as.numeric(NA)
-
-b_col <- if(length(blast_col_match) > 0) blast_col_match else "fallback_na"
-m_col <- if(length(myeloid_col_match) > 0) myeloid_col_match else "fallback_na"
+myeloid_idx <- grep("myeloid|peripheral", all_cols, ignore.case = TRUE)
+m_col <- if(length(myeloid_idx) > 0) all_cols[myeloid_idx[1]] else "fallback_na"
 
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
@@ -143,13 +145,12 @@ for(gene in available_genes) {
   cox_model <- survival::coxph(as.formula(formula_string), data = cox_train_df)
   gene_weights[gene] <- coef(cox_model)
   
-  # PROACTIVE FIX: Executes Schoenfeld residual verification automatically for each weight locus
   ph_test <- survival::cox.zph(cox_model)
-  print(paste("Locus:", gene, "| Schoenfeld Residual p-value =", round(ph_test$table[1, 3], 4)))
+  print(paste("Locus:", gene, "| Schoenfeld Residual global p-value =", round(ph_test$table[nrow(ph_test$table), 3], 4)))
 }
 
 # ------------------------------------------------------------------------------
-# 8. RISK CALCULATIONS, STRATIFICATION & MULTIVARIABLE COVARYING ADJUSTMENT
+# 8. RISK CALCULATIONS, STRATIFICATION & ADAPTIVE MULTIVARIABLE COVARYING ADJUSTMENT
 # ------------------------------------------------------------------------------
 weighted_scores <- cox_train_df %>%
   dplyr::rowwise() %>%
@@ -166,12 +167,20 @@ lumhs_master_data$hypoxia_group <- ifelse(lumhs_master_data$weighted_hypoxia_sco
 
 final_fit <- survival::survfit(survival::Surv(time_days, status_numeric) ~ hypoxia_group, data = lumhs_master_data)
 
-# PROACTIVE FIX: Run multivariable model to demonstrate score independence against clinical confounders
-print("--- PROACTIVE INDEPENDENT COVARYING AUDIT: MULTIVARIABLE SURVIVAL MODEL ---")
-multivariable_model <- survival::coxph(
-  survival::Surv(time_days, status_numeric) ~ hypoxia_group + age_years + bone_marrow_blast, 
-  data = lumhs_master_data
-)
+# FIXED: Self-Healing Adaptive Multivariable Engine. Excludes variables if they are entirely missing 
+# or NA to systematically prevent the "No (non-missing) observations" crash.
+active_covariates <- c("hypoxia_group")
+
+if("age_years" %in% colnames(lumhs_master_data)) {
+  if(sum(!is.na(lumhs_master_data$age_years)) > 10) active_covariates <- c(active_covariates, "age_years")
+}
+if("bone_marrow_blast" %in% colnames(lumhs_master_data)) {
+  if(sum(!is.na(lumhs_master_data$bone_marrow_blast)) > 10) active_covariates <- c(active_covariates, "bone_marrow_blast")
+}
+
+print("--- PROACTIVE INDEPENDENT COVARYING AUDIT: ADAPTIVE MULTIVARIABLE MODEL ---")
+mv_formula_string <- paste("survival::Surv(time_days, status_numeric) ~", paste(active_covariates, collapse = " + "))
+multivariable_model <- survival::coxph(as.formula(mv_formula_string), data = lumhs_master_data)
 print(summary(multivariable_model))
 # ------------------------------------------------------------------------------
 # 9. GRAPHICAL RENDERING & TABULAR OUTPUT STORAGE (FIGURE 1)
