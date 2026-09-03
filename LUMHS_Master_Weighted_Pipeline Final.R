@@ -1,6 +1,6 @@
 # ==============================================================================
 # MASTER COMPILATION PIPELINE: COX-WEIGHTED 15-GENE BUFFA PROGNOSTIC MODEL
-# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (2027)
+# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (2026)
 # Principal Investigator: Dr. Aqeel Ahmed (MD)
 # Target Journal Submission: PLOS ONE (Technical Soundness Track)
 # ==============================================================================
@@ -45,14 +45,13 @@ set.seed(2027)
 message("Downloading raw TCGA-LAML multi-assay experiment data directly from API...")
 laml_mae <- curatedTCGAData::curatedTCGAData(disease = "LAML", assays = c("RNASeq2GeneNorm"), version = "2.0.1", dry.run = FALSE)
 
-# FIXED: Dynamically target the exact internal assay registry name string to insulate against server modifications
+# Extract the exact internal assay registry name string to insulate against server modifications
 target_assay_name <- names(MultiAssayExperiment::assays(laml_mae))[1]
 
 assay_map <- as.data.frame(MultiAssayExperiment::sampleMap(laml_mae)) %>%
   dplyr::filter(assay == target_assay_name) %>%
   dplyr::mutate(colname = as.character(colname), primary = as.character(primary))
 
-# FIXED: Replaced unsafe bracket-list indexing with the official matrix extraction engine method
 raw_assay <- MultiAssayExperiment::assay(laml_mae, 1)
 aml_matrix_raw <- as.data.frame(raw_assay)
 
@@ -94,8 +93,8 @@ myeloid_col_match <- intersect(myeloid_candidates, all_cols)
 
 clinical_data_raw$fallback_na <- as.numeric(NA)
 
-b_col <- if(length(blast_col_match) > 0) blast_col_match else "fallback_na"
-m_col <- if(length(myeloid_col_match) > 0) myeloid_col_match else "fallback_na"
+b_col <- if(length(blast_col_match) > 0) blast_col_match[1] else "fallback_na"
+m_col <- if(length(myeloid_col_match) > 0) myeloid_col_match[1] else "fallback_na"
 
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
@@ -307,7 +306,7 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
         risk.table = TRUE, palette = c("#D35400", "#27AE60"),
         legend.labs = c("High Blast Load", "Low Blast Load"),
         xlab = "Follow-up Duration (Days)", ylab = "Survival Probability",
-        title = "LUMHS Local Cohort Internal Survival Kinetics",
+        title = "LUMHS Local Validation Cohort Internal Survival Kinetics",
         risk.table.height = 0.22, tables.theme = survminer::theme_cleantable()
       )
       
