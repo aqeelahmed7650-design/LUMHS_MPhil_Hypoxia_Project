@@ -59,23 +59,36 @@ message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target f
 # ------------------------------------------------------------------------------
 # 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
+# ------------------------------------------------------------------------------
 survival_base <- clinical_data_raw %>%
-  mutate(patient_id = toupper(patientID)) %>%
-  select(patient_id, days_to_death, days_to_last_followup, vital_status) %>%
-  mutate(
+  dplyr::mutate(patient_id = stringr::toupper(patientID)) %>%
+  dplyr::select(patient_id, days_to_death, days_to_last_followup, vital_status) %>%
+  dplyr::mutate(
     time_days = ifelse(!is.na(days_to_death), as.numeric(days_to_death), as.numeric(days_to_last_followup)),
     status_numeric = ifelse(vital_status == 1 | grepl("dead|deceased", vital_status, ignore.case = TRUE), 1, 0)
   ) %>%
-  filter(!is.na(time_days) & time_days > 0)
+  dplyr::filter(!is.na(time_days) & time_days > 0)
+
+# FIXED: Peer-Review Safeguard. Dynamically detect columns by text patterns 
+# to protect against varying Bioconductor/Firehose API column renamings.
+blast_col_match <- colnames(clinical_data_raw)[grep("blast", colnames(clinical_data_raw), ignore.case = TRUE)[1]]
+myeloid_col_match <- colnames(clinical_data_raw)[grep("myeloid|peripheral", colnames(clinical_data_raw), ignore.case = TRUE)[1]]
+
+# Fallback defaults if matching yields an unexpected empty index
+if(is.na(blast_col_match)) blast_col_match <- "percent_bone_marrow_blasts"
+if(is.na(myeloid_col_match)) myeloid_col_match <- "percent_myeloid_cells_peripheral_blood"
 
 aml_clean_clinical <- clinical_data_raw %>%
-  mutate(
-    patient_id = toupper(patientID),
-    bone_marrow_blast = as.numeric(percent_bone_marrow_blasts),
-    peripheral_blood_myeloid = as.numeric(percent_myeloid_cells_peripheral_blood) 
+  dplyr::mutate(
+    patient_id = stringr::toupper(patientID),
+    # Uses programmatic indexing (.[[]]) to pull columns flexibly by name string
+    bone_marrow_blast = as.numeric(.[[blast_col_match]]),
+    peripheral_blood_myeloid = as.numeric(.[[myeloid_col_match]]) 
   ) %>%
-  filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid)) %>%
-  select(patient_id, bone_marrow_blast, peripheral_blood_myeloid)
+  dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid)) %>%
+  dplyr::select(patient_id, bone_marrow_blast, peripheral_blood_myeloid)
 
 # ------------------------------------------------------------------------------
 # 5. LONG TRANSFORMATION AND CONVERSION VIA PRIMARY SOLID/BLOOD ALIGNMENT
