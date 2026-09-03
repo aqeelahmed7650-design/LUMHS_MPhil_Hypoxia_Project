@@ -65,8 +65,10 @@ message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target f
 # 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
 # ------------------------------------------------------------------------------
 survival_base <- clinical_data_raw %>%
-  # FIXED: Programmatically align column metadata using the built-in TCGA utility identifier converter
-  dplyr::mutate(patient_id = toupper(TCGAutils::TCGAbarcode(patientID))) %>%
+  # Ensure the patient identifier contains the standard "TCGA-" prefix format
+  dplyr::mutate(patient_id = ifelse(startsWith(toupper(patientID), "TCGA"), 
+                                    toupper(patientID), 
+                                    paste0("TCGA-", toupper(patientID)))) %>%
   dplyr::select(patient_id, days_to_death, days_to_last_followup, vital_status) %>%
   dplyr::mutate(
     time_days = ifelse(!is.na(days_to_death), as.numeric(days_to_death), as.numeric(days_to_last_followup)),
@@ -82,7 +84,9 @@ if(is.na(myeloid_col_match[1])) myeloid_col_match <- "percent_myeloid_cells_peri
 
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
-    patient_id = toupper(TCGAutils::TCGAbarcode(patientID)),
+    patient_id = ifelse(startsWith(toupper(patientID), "TCGA"), 
+                        toupper(patientID), 
+                        paste0("TCGA-", toupper(patientID))),
     bone_marrow_blast = as.numeric(.[[blast_col_match[1]]]),
     peripheral_blood_myeloid = as.numeric(.[[myeloid_col_match[1]]]) 
   ) %>%
@@ -90,9 +94,9 @@ aml_clean_clinical <- clinical_data_raw %>%
   dplyr::select(patient_id, bone_marrow_blast, peripheral_blood_myeloid)
 
 # ------------------------------------------------------------------------------
-# 5. LONG TRANSFORMATION AND CONVERSION VIA IMMUNE BARCODE WRAPPERS
+# 5. LONG TRANSFORMATION VIA AN OVERHAULED GLOBAL BARCODE EXTRACTION ENGINE
 # ------------------------------------------------------------------------------
-# FIXED: Normalize incoming raw column headers to hyphens before pulling barcodes
+# Standardize all column periods to hyphens across the entire raw matrix
 colnames(b15_matrix) <- gsub("\\.", "-", colnames(b15_matrix))
 
 b15_long <- b15_matrix %>%
@@ -101,11 +105,10 @@ b15_long <- b15_matrix %>%
     names_to = "raw_header", 
     values_to = "expression_value"
   ) %>%
-  # Extract long barcode from anywhere in the header string
-  dplyr::mutate(extracted_bc = stringr::str_extract(raw_header, "TCGA-[A-Z0-9]{2}-[A-Z0-9]{4}-[0-9]{2}[A-Z]")) %>%
+  # FIXED: Broad scan regex catches any variation of the 12-char or 15-char TCGA code anywhere in the column header string
+  dplyr::mutate(extracted_bc = stringr::str_extract(raw_header, "TCGA-[A-Z0-9]{2}-[A-Z0-9]{4}")) %>%
   dplyr::filter(!is.na(extracted_bc)) %>%
-  # FIXED: Leverages TCGAutils to extract precise 12-char identifier directly, bypassing local slicing limitations
-  dplyr::mutate(patient_id = toupper(TCGAutils::TCGAbarcode(extracted_bc))) %>%
+  dplyr::mutate(patient_id = toupper(extracted_bc)) %>%
   dplyr::mutate(log_val = log2(expression_value + 1)) %>%
   dplyr::group_by(gene_name) %>%
   dplyr::mutate(z_score = as.numeric(scale(log_val))) %>%
@@ -120,13 +123,12 @@ wide_expression <- b15_long %>%
   dplyr::summarize(z_score = mean(z_score, na.rm = TRUE), .groups = 'drop') %>%
   tidyr::pivot_wider(names_from = gene_name, values_from = z_score)
 
-# Verified merge intersection: This will now yield matched overlapping patient instances
+# Connect datasets securely using standard 12-character participant identifiers
 cox_train_df <- dplyr::inner_join(survival_base, wide_expression, by = "patient_id")
 
 # Critical Checkpoint Message: Outputs overlap metrics directly to your terminal console
 message(paste("CRITICAL MERGE VERIFICATION: Successfully synchronized", nrow(cox_train_df), "matching patient records for survival testing."))
 
-# ------------------------------------------------------------------------------
 # 7. DYNAMIC UNIVARIATE COX MODEL GENERATION
 # ------------------------------------------------------------------------------
 gene_weights <- c()
