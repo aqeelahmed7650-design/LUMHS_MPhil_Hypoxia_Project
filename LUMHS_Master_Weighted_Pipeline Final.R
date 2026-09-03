@@ -1,6 +1,6 @@
 # ==============================================================================
 # MASTER COMPILATION PIPELINE: COX-WEIGHTED 15-GENE BUFFA PROGNOSTIC MODEL
-# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (2026)
+# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (2027)
 # Principal Investigator: Dr. Aqeel Ahmed (MD)
 # Target Journal Submission: PLOS ONE (Technical Soundness Track)
 # ==============================================================================
@@ -45,8 +45,7 @@ set.seed(2027)
 message("Downloading raw TCGA-LAML multi-assay experiment data directly from API...")
 laml_mae <- curatedTCGAData::curatedTCGAData(disease = "LAML", assays = c("RNASeq2GeneNorm"), version = "2.0.1", dry.run = FALSE)
 
-# Extract the exact internal assay registry name string to insulate against server modifications
-target_assay_name <- names(MultiAssayExperiment::assays(laml_mae))[1]
+target_assay_name <- names(MultiAssayExperiment::assays(laml_mae))
 
 assay_map <- as.data.frame(MultiAssayExperiment::sampleMap(laml_mae)) %>%
   dplyr::filter(assay == target_assay_name) %>%
@@ -75,10 +74,11 @@ message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target f
 # 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
 # ------------------------------------------------------------------------------
 survival_base <- clinical_data_raw %>%
-  dplyr::select(primary_id, days_to_death, days_to_last_followup, vital_status) %>%
+  dplyr::select(primary_id, days_to_death, days_to_last_followup, vital_status, age) %>%
   dplyr::mutate(
     time_days = ifelse(!is.na(days_to_death), as.numeric(days_to_death), as.numeric(days_to_last_followup)),
-    status_numeric = ifelse(vital_status == 1 | grepl("dead|deceased", vital_status, ignore.case = TRUE), 1, 0)
+    status_numeric = ifelse(vital_status == 1 | grepl("dead|deceased", vital_status, ignore.case = TRUE), 1, 0),
+    age_years = as.numeric(age)
   ) %>%
   dplyr::filter(!is.na(time_days) & time_days > 0)
 
@@ -93,8 +93,8 @@ myeloid_col_match <- intersect(myeloid_candidates, all_cols)
 
 clinical_data_raw$fallback_na <- as.numeric(NA)
 
-b_col <- if(length(blast_col_match) > 0) blast_col_match[1] else "fallback_na"
-m_col <- if(length(myeloid_col_match) > 0) myeloid_col_match[1] else "fallback_na"
+b_col <- if(length(blast_col_match) > 0) blast_col_match else "fallback_na"
+m_col <- if(length(myeloid_col_match) > 0) myeloid_col_match else "fallback_na"
 
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
@@ -110,11 +110,7 @@ tcga_barcode_cols <- colnames(b15_matrix)[grepl("^TCGA|^LAML", colnames(b15_matr
 
 b15_long <- b15_matrix %>%
   dplyr::select(gene_name, dplyr::all_of(tcga_barcode_cols)) %>%
-  tidyr::pivot_longer(
-    cols = -gene_name, 
-    names_to = "colname", 
-    values_to = "expression_value"
-  ) %>%
+  tidyr::pivot_longer(cols = -gene_name, names_to = "colname", values_to = "expression_value") %>%
   dplyr::inner_join(assay_map, by = "colname") %>%
   dplyr::mutate(patient_id = primary) %>%
   dplyr::mutate(log_val = log2(expression_value + 1)) %>%
@@ -133,22 +129,27 @@ wide_expression <- b15_long %>%
   dplyr::rename(primary_id = patient_id)
 
 cox_train_df <- dplyr::inner_join(survival_base, wide_expression, by = "primary_id")
-message(paste("CRITICAL MERGE VERIFICATION: Successfully synchronized", nrow(cox_train_df), "matching patient records for survival testing."))
+message(paste("CRITICAL MERGE VERIFICATION: Successfully synchronized", nrow(cox_train_df), "matching patient records."))
 
 # ------------------------------------------------------------------------------
-# 7. DYNAMIC UNIVARIATE COX MODEL GENERATION
+# 7. DYNAMIC UNIVARIATE COX MODEL GENERATION & PROACTIVE PROPORTIONAL HAZARDS AUDIT
 # ------------------------------------------------------------------------------
 gene_weights <- c()
 available_genes <- intersect(buffa_15_genes, colnames(wide_expression))
 
+print("--- ADVANCED COMPUTATIONAL AUDIT: PROPORTIONAL HAZARDS ASSUMPTION LOG ---")
 for(gene in available_genes) {
   formula_string <- paste("Surv(time_days, status_numeric) ~", paste0("`", gene, "`"))
   cox_model <- survival::coxph(as.formula(formula_string), data = cox_train_df)
   gene_weights[gene] <- coef(cox_model)
+  
+  # PROACTIVE FIX: Executes Schoenfeld residual verification automatically for each weight locus
+  ph_test <- survival::cox.zph(cox_model)
+  print(paste("Locus:", gene, "| Schoenfeld Residual p-value =", round(ph_test$table[1, 3], 4)))
 }
 
 # ------------------------------------------------------------------------------
-# 8. RISK CALCULATIONS AND STRATIFICATION
+# 8. RISK CALCULATIONS, STRATIFICATION & MULTIVARIABLE COVARYING ADJUSTMENT
 # ------------------------------------------------------------------------------
 weighted_scores <- cox_train_df %>%
   dplyr::rowwise() %>%
@@ -164,6 +165,14 @@ lumhs_master_data$hypoxia_group <- ifelse(lumhs_master_data$weighted_hypoxia_sco
                                           "High Risk Hypoxia", "Low Risk Hypoxia")
 
 final_fit <- survival::survfit(survival::Surv(time_days, status_numeric) ~ hypoxia_group, data = lumhs_master_data)
+
+# PROACTIVE FIX: Run multivariable model to demonstrate score independence against clinical confounders
+print("--- PROACTIVE INDEPENDENT COVARYING AUDIT: MULTIVARIABLE SURVIVAL MODEL ---")
+multivariable_model <- survival::coxph(
+  survival::Surv(time_days, status_numeric) ~ hypoxia_group + age_years + bone_marrow_blast, 
+  data = lumhs_master_data
+)
+print(summary(multivariable_model))
 # ------------------------------------------------------------------------------
 # 9. GRAPHICAL RENDERING & TABULAR OUTPUT STORAGE (FIGURE 1)
 # ------------------------------------------------------------------------------
