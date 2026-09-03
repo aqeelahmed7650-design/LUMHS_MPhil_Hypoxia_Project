@@ -1,13 +1,33 @@
 # ==============================================================================
 # MASTER COMPILATION PIPELINE: COX-WEIGHTED 15-GENE BUFFA PROGNOSTIC MODEL
-# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (January 2027)
+# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative
 # Principal Investigator: Dr. Aqeel Ahmed
 # ==============================================================================
 
-# 1. Clear Active Memory Workspace Environment Managed via R Project (.Rproj)
+# ------------------------------------------------------------------------------
+# 1. AUTOMATED BOOTSTRAPPING FOR CRAN AND BIOCONDUCTOR INFRASTRUCTURES
+# ------------------------------------------------------------------------------
+options(repos = c(CRAN = "https://cloud.r-project.org"))
 
-# 2. Load Core Structural and Statistical Packages
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+required_bioc <- c("curatedTCGAData", "TCGAutils", "MultiAssayExperiment")
+new_bioc <- required_bioc[!(required_bioc %in% installed.packages()[, "Package"])]
+if (length(new_bioc) > 0) {
+  BiocManager::install(new_bioc, update = FALSE, ask = FALSE)
+}
+
+required_cran <- c("dplyr", "tidyr", "stringr", "survival", "survminer", "ggplot2")
+new_cran <- required_cran[!(required_cran %in% installed.packages()[, "Package"])]
+if (length(new_cran) > 0) {
+  install.packages(new_cran)
+}
+
 library(curatedTCGAData)
+library(TCGAutils)
+library(MultiAssayExperiment)
 library(dplyr)
 library(tidyr)
 library(stringr)
@@ -15,66 +35,78 @@ library(survival)
 library(survminer)
 library(ggplot2)
 
-# 3. Memory Verification: Reload Environment Data Workspace if Missing
-if (!exists("aml_matrix")) {
-  message("Active aml_matrix object missing. Extracting from local workspace storage...")
-  load("LUMHS_Hypoxia_Project_Workspace.RData")
-}
+# ------------------------------------------------------------------------------
+# 2. DYNAMIC PROGRAMMATIC FETCH OF RAW GLOBAL GENOMIC & CLINICAL COHORT
+# ------------------------------------------------------------------------------
+message("Downloading raw TCGA-LAML multi-assay experiment data directly from API...")
+laml_mae <- curatedTCGAData(disease = "LAML", assays = c("RNASeq2GeneNorm"), version = "2.0.1", dry.run = FALSE)
 
-# Ensure hidden workspace dependencies are present before proceeding
-if (!exists("clinical_data") | !exists("aml_clean_clinical")) {
-  stop("CRITICAL ERROR: Required underlying data objects (clinical_data or aml_clean_clinical) are missing from the workspace image.")
-}
+raw_assay <- assays(laml_mae)[[1]]
+aml_matrix_raw <- as.data.frame(raw_assay)
+aml_matrix_raw$gene_name <- rownames(raw_assay)
 
-# 4. Initialize the Universally Validated 15-Gene Buffa Hypoxia Classifier Vector
+clinical_data_raw <- as.data.frame(colData(laml_mae))
+
+# ------------------------------------------------------------------------------
+# 3. INITIALIZE THE BUFFA 15-GENE HYPOXIA CLASSIFIER VECTOR
+# ------------------------------------------------------------------------------
 buffa_15_genes <- c("ACOT7", "ADM", "ALDOA", "CDKN3", "ENO1", "LDHA", "MIF", 
                     "MRPS17", "NDRG1", "P4HA1", "PGAM1", "SLC2A1", "TPI1", "TUBB6", "VEGFA")
 
-# 5. Extract and Subset the Hypoxia Loci from the Primary Genomic Matrix
-b15_matrix <- aml_matrix[aml_matrix$gene_name %in% buffa_15_genes, ]
+b15_matrix <- aml_matrix_raw[aml_matrix_raw$gene_name %in% buffa_15_genes, ]
 message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target features out of 15 Buffa genes."))
 
-# 6. Extract and Clean Direct Clinical Survival Timelines from Base Tables
-survival_base <- clinical_data %>%
-  mutate(patient_id = row.names(clinical_data)) %>%
-  select(
-    patient_id, 
-    days_to_death, 
-    days_to_last_followup, 
-    vital_status
-  ) %>%
+# ------------------------------------------------------------------------------
+# 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
+# ------------------------------------------------------------------------------
+survival_base <- clinical_data_raw %>%
+  mutate(patient_id = toupper(patientID)) %>%
+  select(patient_id, days_to_death, days_to_last_followup, vital_status) %>%
   mutate(
     time_days = ifelse(!is.na(days_to_death), as.numeric(days_to_death), as.numeric(days_to_last_followup)),
     status_numeric = ifelse(vital_status == 1 | grepl("dead|deceased", vital_status, ignore.case = TRUE), 1, 0)
   ) %>%
-  filter(!is.na(time_days))
+  filter(!is.na(time_days) & time_days > 0)
 
-# 7. Execute Long Transformation and Parse Alphanumeric Patient Barcodes
-b15_long <- as.data.frame(b15_matrix) %>%
-  select(-gene_id, -gene_type) %>%
-  pivot_longer(cols = -gene_name, names_to = "raw_header", values_to = "expression_value") %>%
-  filter(str_detect(raw_header, "unstranded_")) %>%
+aml_clean_clinical <- clinical_data_raw %>%
   mutate(
-    sample_barcode = str_extract(raw_header, 'TCGA-[A-Z0-9]{2}-[A-Z0-9]{4}-[0-9]{2}[A-Z]'),
-    patient_id = substr(sample_barcode, 1, 12)
+    patient_id = toupper(patientID),
+    bone_marrow_blast = as.numeric(percent_bone_marrow_blasts),
+    peripheral_blood_myeloid = as.numeric(percent_myeloid_cells_peripheral_blood) 
   ) %>%
-  filter(!is.na(patient_id)) %>%
+  filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid)) %>%
+  select(patient_id, bone_marrow_blast, peripheral_blood_myeloid)
+
+# ------------------------------------------------------------------------------
+# 5. LONG TRANSFORMATION AND CONVERSION VIA PRIMARY SOLID/BLOOD ALIGNMENT
+# ------------------------------------------------------------------------------
+b15_long <- b15_matrix %>%
+  pivot_longer(cols = -gene_name, names_to = "raw_header", values_to = "expression_value") %>%
+  # FIXED: Updated pattern mapping to handle both hyphens (-) and periods (.) dynamically
+  mutate(sample_barcode = str_extract(raw_header, "TCGA[\\.-][A-Z0-9]{2}[\\.-][A-Z0-9]{4}[\\.-]0[13][A-Z]")) %>%
+  filter(!is.na(sample_barcode)) %>%
+  # Normalize format to hyphens for seamless downstream merging
+  mutate(sample_barcode = str_replace_all(sample_barcode, "\\.", "-")) %>%
+  mutate(patient_id = substr(sample_barcode, 1, 12)) %>%
   mutate(log_val = log2(expression_value + 1)) %>%
   group_by(gene_name) %>%
   mutate(z_score = as.numeric(scale(log_val))) %>%
   ungroup()
 
-# 8. Pivot to Wide Analytical Format for Univariate Regression Training
+# ------------------------------------------------------------------------------
+# 6. WIDE ANALYTICAL FORMATTING & COHORT INTERSECTION
+# ------------------------------------------------------------------------------
 wide_expression <- b15_long %>%
   select(patient_id, gene_name, z_score) %>%
   group_by(patient_id, gene_name) %>%
   summarize(z_score = mean(z_score, na.rm = TRUE), .groups = 'drop') %>%
   pivot_wider(names_from = gene_name, values_from = z_score)
 
-# 9. Intersect Molecular Matrices with Survival Outcomes
 cox_train_df <- inner_join(survival_base, wide_expression, by = "patient_id")
 
-# 10. Dynamically Calculate Univariate Cox Proportional Hazard Weights (Coefficients)
+# ------------------------------------------------------------------------------
+# 7. DYNAMIC UNIVARIATE COX MODEL GENERATION
+# ------------------------------------------------------------------------------
 gene_weights <- c()
 available_genes <- intersect(buffa_15_genes, colnames(wide_expression))
 
@@ -84,63 +116,61 @@ for(gene in available_genes) {
   gene_weights[gene] <- coef(cox_model)
 }
 
-# 11. Compute the Final Weighted Hypoxia Risk Score per Unique Patient Profile
+# ------------------------------------------------------------------------------
+# 8. RISK CALCULATIONS AND STRATIFICATION
+# ------------------------------------------------------------------------------
 weighted_scores <- cox_train_df %>%
   rowwise() %>%
-  mutate(
-    weighted_hypoxia_score = sum(c_across(all_of(available_genes)) * gene_weights, na.rm = TRUE)
-  ) %>%
+  mutate(weighted_hypoxia_score = sum(c_across(all_of(available_genes)) * gene_weights, na.rm = TRUE)) %>%
   ungroup() %>%
   select(patient_id, weighted_hypoxia_score)
 
-# 12. Consolidate Master Research Dataset (Pathology Metrics + Survival + Weighted Scores)
 lumhs_master_data <- inner_join(aml_clean_clinical, weighted_scores, by = "patient_id") %>%
   inner_join(survival_base, by = "patient_id")
 
-# 13. Group Cohort via Median Stratification and Fit Kaplan-Meier Model
 median_weighted <- median(lumhs_master_data$weighted_hypoxia_score, na.rm = TRUE)
-lumhs_master_data$hypoxia_group <- ifelse(lumhs_master_data$weighted_hypoxia_score > median_weighted, "High Risk Hypoxia", "Low Risk Hypoxia")
+lumhs_master_data$hypoxia_group <- ifelse(lumhs_master_data$weighted_hypoxia_score > median_weighted, 
+                                          "High Risk Hypoxia", "Low Risk Hypoxia")
 
 final_fit <- survfit(Surv(time_days, status_numeric) ~ hypoxia_group, data = lumhs_master_data)
 
-# 14. Render the Definitive Publication-Ready Kaplan-Meier Curve
+# ------------------------------------------------------------------------------
+# 9. GRAPHICAL RENDERING & TABULAR OUTPUT STORAGE
+# ------------------------------------------------------------------------------
 final_plot <- ggsurvplot(
-  final_fit, 
-  data = lumhs_master_data, 
-  pval = TRUE, 
-  conf.int = TRUE,
-  risk.table = TRUE, 
-  palette = c("#E41A1C", "#377EB8"), 
+  final_fit, data = lumhs_master_data, pval = TRUE, conf.int = TRUE,
+  risk.table = TRUE, palette = c("#E41A1C", "#377EB8"), 
   legend.labs = c("High Risk Hypoxia", "Low Risk Hypoxia"),
-  xlab = "Survival Time (Days)", 
-  ylab = "Survival Probability",
+  xlab = "Survival Time (Days)", ylab = "Survival Probability",
   title = "Cox-Weighted 15-Gene Buffa Hypoxia Prognostic Model",
-  risk.table.height = 0.22,
-  tables.theme = theme_cleantable()
+  risk.table.height = 0.22, tables.theme = theme_cleantable()
 )
 
-# 15. Render graph cleanly to disk extracting the composite plot matrix elements
 png("Figure_1_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
-print(final_plot)
+survminer:::print.ggsurvplot(final_plot, newpage = FALSE)
 dev.off()
 message("Figure 1 successfully generated and saved to your project directory!")
-# 15. Export Clean CSV Spreadsheet Table Data to Working Folder Disk
+
 write.csv(lumhs_master_data, "LUMHS_Global_Survival_Validated_Data.csv", row.names = FALSE)
-
-# 16. Lock and Save the Workspace Environment Binary File (Non-Destructive)
 save.image(file = "LUMHS_Hypoxia_Project_Processed_Outputs.RData")
-message("--- SUCCESS: Master Pipeline executed with zero errors. RData and CSV saved. ---")
+message("--- SUCCESS: Master Pipeline executed with zero errors. ---")
 
-## =============================================================================
-## PHASE 3: LOCAL TO GLOBAL CROSS-POPULATION COMPARISON (LUMHS VALIDATION)
-## =============================================================================
+# ==============================================================================
+# PHASE 3: LOCAL TO GLOBAL CROSS-POPULATION COMPARISON (LUMHS VALIDATION)
+# ==============================================================================
 
-# 1. Load your local clinical data spreadsheet (Target Sample: 30-50 patients)
+# 1. Load local clinical spreadsheet with robust missing value strings
 if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
-  local_data <- read.csv("LUMHS_Local_AML_Cohort.csv", na.strings = "NA")
+  # Insulates against blank entries, dot markers, and standard NA text configurations
+  local_data <- read.csv("LUMHS_Local_AML_Cohort.csv", na.strings = c("NA", " ", "", "."))
   
-  required_columns <- c("bone_marrow_blast", "bone_marrow_neutrophil")
+  # Force lowercase header mapping to prevent data typing and case mismatches
+  colnames(local_data) <- tolower(colnames(local_data))
+  
+  # FIXED: Aligned target metrics with the true biological compartment definitions
+  required_columns <- c("bone_marrow_blast", "peripheral_blood_myeloid")
   missing_cols <- setdiff(required_columns, colnames(local_data))
+  
   if (length(missing_cols) > 0) {
     stop(paste("CRITICAL ERROR: The template is missing columns:", paste(missing_cols, collapse = ", ")))
   }
@@ -148,39 +178,42 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   # Ensure there is actual data logged past row 1 to prevent empty array crashes
   if(nrow(local_data) > 1) {
     
-    # 2. Extract and format the matching global parameters from your active workspace
+    # 2. Isolate and clean target metrics from the global cohort
     global_comparison_df <- lumhs_master_data %>%
-      dplyr::select(bone_marrow_blast, bone_marrow_neutrophil) %>%
-      dplyr::mutate(Cohort = "Global (TCGA)")
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid) %>%
+      dplyr::mutate(Cohort = "Global (TCGA)") %>%
+      # Defensive Filter: Ensure comparison values are strictly numeric and complete
+      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid))
     
-    # 3. Format and isolate your local parameters
+    # 3. Isolate and clean target metrics from your local cohort
     local_comparison_df <- local_data %>%
-      dplyr::select(bone_marrow_blast, bone_marrow_neutrophil) %>%
-      dplyr::mutate(Cohort = "Local (LUMHS)")
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid) %>%
+      dplyr::mutate(Cohort = "Local (LUMHS)") %>%
+      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid))
     
     # 4. Bind both cohorts into a master comparative matrix
     combined_cohorts_df <- rbind(global_comparison_df, local_comparison_df)
     
     # 5. Run Independent T-Tests to check for regional baseline variations
     blast_t_test <- t.test(bone_marrow_blast ~ Cohort, data = combined_cohorts_df)
-    neutrophil_t_test <- t.test(bone_marrow_neutrophil ~ Cohort, data = combined_cohorts_df)
+    myeloid_t_test <- t.test(peripheral_blood_myeloid ~ Cohort, data = combined_cohorts_df)
     
     # Print statistical differences to the console for your Results Chapter
     print("--- CROSS-POPULATION BASELINE DIFFERENCES ---")
     print(blast_t_test)
-    print(neutrophil_t_test)
+    print(myeloid_t_test)
     
     # 6. Run Local Non-Parametric Spearman Rank Correlations
-    local_spearman <- cor.test(local_data$bone_marrow_blast, 
-                               local_data$bone_marrow_neutrophil, 
+    local_spearman <- cor.test(local_comparison_df$bone_marrow_blast, 
+                               local_comparison_df$peripheral_blood_myeloid, 
                                method = "spearman", exact = FALSE)
     
     print("--- LOCAL SINDH COHORT CORRELATION RESULTS ---")
     print(local_spearman)
     
-    comp_scatterplot <- ggplot(local_data, aes(x = bone_marrow_blast, y = bone_marrow_neutrophil)) +
+    comp_scatterplot <- ggplot(local_comparison_df, aes(x = bone_marrow_blast, y = peripheral_blood_myeloid)) +
       geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
-      geom_smooth(method = "lm", color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
+      geom_smooth(method = "loess", formula = y ~ x, color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
       theme_bw(base_size = 12) +
       theme(
         plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
@@ -191,21 +224,21 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
         title = "Local Marrow Crowding Dynamics",
         subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (p = ", format.pval(local_spearman$p.value, digits = 4), ")"),
         x = "Bone Marrow Blast Infiltration (%)",
-        y = "Bone Marrow Mature Neutrophils (%)"
+        y = "Peripheral Blood Myeloid Cells (%)"
       )
 
     ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
-    print("Figure 3 successfully generated and saved to your project directory!")
+    message("Figure 3 successfully generated and saved to your project directory!")
 
     # 7. Reshape data for publication-grade ggplot2 dual-panel visualization
     plotting_df <- combined_cohorts_df %>%
-      tidyr::pivot_longer(cols = c(bone_marrow_blast, bone_marrow_neutrophil), 
+      tidyr::pivot_longer(cols = c(bone_marrow_blast, peripheral_blood_myeloid), 
                           names_to = "Parameter", values_to = "Percentage")
     
-    # Create clean panel labels
+    # FIXED: Updated clean panel text labels to accurately reflect peripheral blood metrics
     panel_labels <- c(
       "bone_marrow_blast" = "Bone Marrow Blast Infiltration (%)",
-      "bone_marrow_neutrophil" = "Bone Marrow Mature Neutrophils (%)"
+      "peripheral_blood_myeloid" = "Peripheral Blood Myeloid Cells (%)"
     )
     
     # Generate Figure 2 Boxplot
@@ -230,12 +263,11 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
         y = "Tissue Compartment Density (%)"
       )
     
-    # Save the chart automatically
     ggsave("Figure_2_Cross_Population_Comparison.png", plot = comp_boxplot, 
            width = 8, height = 5, dpi = 300)
-    print("Figure 2 successfully generated and saved to your project directory!")
+    message("Figure 2 successfully generated and saved to your project directory!")
     
   } else {
-    print("LUMHS_Local_AML_Cohort.csv tracker template detected. Code is primed and waiting for 2027 data entry.")
+    message("LUMHS_Local_AML_Cohort.csv tracker template detected. Code is primed and waiting for data entry.")
   }
 }
