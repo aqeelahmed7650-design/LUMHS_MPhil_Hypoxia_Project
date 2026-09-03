@@ -55,15 +55,12 @@ buffa_15_genes <- c("ACOT7", "ADM", "ALDOA", "CDKN3", "ENO1", "LDHA", "MIF",
 
 b15_matrix <- aml_matrix_raw[aml_matrix_raw$gene_name %in% buffa_15_genes, ]
 message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target features out of 15 Buffa genes."))
-
-# ------------------------------------------------------------------------------
-# 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
-# ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
 # 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
 # ------------------------------------------------------------------------------
 survival_base <- clinical_data_raw %>%
-  dplyr::mutate(patient_id = stringr::toupper(patientID)) %>%
+  # FIXED: Removed 'stringr::' namespace tag since toupper is a standard base R function
+  dplyr::mutate(patient_id = toupper(patientID)) %>%
   dplyr::select(patient_id, days_to_death, days_to_last_followup, vital_status) %>%
   dplyr::mutate(
     time_days = ifelse(!is.na(days_to_death), as.numeric(days_to_death), as.numeric(days_to_last_followup)),
@@ -73,19 +70,19 @@ survival_base <- clinical_data_raw %>%
 
 # FIXED: Peer-Review Safeguard. Dynamically detect columns by text patterns 
 # to protect against varying Bioconductor/Firehose API column renamings.
-blast_col_match <- colnames(clinical_data_raw)[grep("blast", colnames(clinical_data_raw), ignore.case = TRUE)[1]]
-myeloid_col_match <- colnames(clinical_data_raw)[grep("myeloid|peripheral", colnames(clinical_data_raw), ignore.case = TRUE)[1]]
+blast_col_match <- colnames(clinical_data_raw)[grep("blast", colnames(clinical_data_raw), ignore.case = TRUE)]
+myeloid_col_match <- colnames(clinical_data_raw)[grep("myeloid|peripheral", colnames(clinical_data_raw), ignore.case = TRUE)]
 
 # Fallback defaults if matching yields an unexpected empty index
-if(is.na(blast_col_match)) blast_col_match <- "percent_bone_marrow_blasts"
-if(is.na(myeloid_col_match)) myeloid_col_match <- "percent_myeloid_cells_peripheral_blood"
+if(is.na(blast_col_match[1])) blast_col_match <- "percent_bone_marrow_blasts"
+if(is.na(myeloid_col_match[1])) myeloid_col_match <- "percent_myeloid_cells_peripheral_blood"
 
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
-    patient_id = stringr::toupper(patientID),
+    patient_id = toupper(patientID),
     # Uses programmatic indexing (.[[]]) to pull columns flexibly by name string
-    bone_marrow_blast = as.numeric(.[[blast_col_match]]),
-    peripheral_blood_myeloid = as.numeric(.[[myeloid_col_match]]) 
+    bone_marrow_blast = as.numeric(.[[blast_col_match[1]]]),
+    peripheral_blood_myeloid = as.numeric(.[[myeloid_col_match[1]]]) 
   ) %>%
   dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid)) %>%
   dplyr::select(patient_id, bone_marrow_blast, peripheral_blood_myeloid)
@@ -100,7 +97,7 @@ b15_long <- b15_matrix %>%
   filter(!is.na(sample_barcode)) %>%
   # Normalize format to hyphens for seamless downstream merging
   mutate(sample_barcode = str_replace_all(sample_barcode, "\\.", "-")) %>%
-  mutate(patient_id = substr(sample_barcode, 1, 12)) %>%
+  dplyr::mutate(patient_id = substr(sample_barcode, 1, 12))
   mutate(log_val = log2(expression_value + 1)) %>%
   group_by(gene_name) %>%
   mutate(z_score = as.numeric(scale(log_val))) %>%
