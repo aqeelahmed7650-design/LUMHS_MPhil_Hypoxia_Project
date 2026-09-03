@@ -2,7 +2,6 @@
 # MASTER COMPILATION PIPELINE: COX-WEIGHTED 15-GENE BUFFA PROGNOSTIC MODEL
 # Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (2027)
 # Principal Investigator: Dr. Aqeel Ahmed (MD)
-# Target Journal Submission: PLOS ONE (Technical Soundness Track)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -183,6 +182,7 @@ mv_formula_string <- paste("survival::Surv(time_days, status_numeric) ~", paste(
 multivariable_model <- survival::coxph(as.formula(mv_formula_string), data = lumhs_master_data)
 print(summary(multivariable_model))
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # 9. GRAPHICAL RENDERING & TABULAR OUTPUT STORAGE (FIGURE 1)
 # ------------------------------------------------------------------------------
 final_plot <- survminer::ggsurvplot(
@@ -228,8 +228,9 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     
     combined_cohorts_df <- rbind(global_comparison_df, local_comparison_df)
     
-    blast_t_test <- t.test(bone_marrow_blast ~ Cohort, data = combined_cohorts_df)
-    myeloid_t_test <- t.test(peripheral_blood_myeloid ~ Cohort, data = combined_cohorts_df)
+    # FIXED: Explicitly declared var.equal = FALSE to confirm Welch's variance protection
+    blast_t_test <- t.test(bone_marrow_blast ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
+    myeloid_t_test <- t.test(peripheral_blood_myeloid ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
     
     print("--- CROSS-POPULATION BASELINE DIFFERENCES ---")
     print(blast_t_test)
@@ -251,9 +252,10 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
         plot.subtitle = element_text(size = 10, hjust = 0.5, face = "italic"),
         panel.grid.minor = element_blank()
       ) +
+      # FIXED: Updated 'p =' string to capitalized, italicized 'P' style-guide compliance
       ggplot2::labs(
         title = "Local Marrow Crowding Dynamics",
-        subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (p = ", format.pval(local_spearman$p.value, digits = 4), ")"),
+        subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (P = ", format.pval(local_spearman$p.value, digits = 4), ")"),
         x = "Bone Marrow Blast Infiltration (%)",
         y = "Peripheral Blood Myeloid Cells (%)"
       )
