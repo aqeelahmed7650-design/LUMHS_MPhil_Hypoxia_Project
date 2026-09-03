@@ -271,3 +271,49 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     message("LUMHS_Local_AML_Cohort.csv tracker template detected. Code is primed and waiting for data entry.")
   }
 }
+    # =========================================================================
+    # OPTIONAL MODULE: LOCAL LONGITUDINAL SURVIVAL CLINICAL VERIFICATION
+    # =========================================================================
+    # System checks if optional tracking columns contain actual numerical events
+    run_local_survival <- FALSE
+    
+    if("local_time_days" %in% colnames(local_data) & "local_status" %in% colnames(local_data)) {
+      clean_survival_subset <- local_data %>%
+        dplyr::select(patient_id, bone_marrow_blast, local_time_days, local_status) %>%
+        dplyr::filter(!is.na(local_time_days) & !is.na(local_status) & !is.na(bone_marrow_blast))
+      
+      if(nrow(clean_survival_subset) >= 15) { # Requires a safe absolute minimum tracking threshold
+        run_local_survival <- TRUE
+      }
+    }
+    
+    if(run_local_survival) {
+      message("Longitudinal metrics confirmed. Executing Optional Local Survival validation module...")
+      
+      # Risk stratify your local cohort based on their marrow blast cell density median
+      median_blast <- median(clean_survival_subset$bone_marrow_blast, na.rm = TRUE)
+      clean_survival_subset$blast_group <- ifelse(clean_survival_subset$bone_marrow_blast > median_blast, 
+                                                   "High Blast Load", "Low Blast Load")
+      
+      # Fit Kaplan-Meier parameters to local hospital cohort tracking metrics
+      local_fit <- survival::survfit(survival::Surv(local_time_days, local_status) ~ blast_group, 
+                                     data = clean_survival_subset)
+      
+      # Render the optional Figure 4 chart
+      local_survival_plot <- survminer::ggsurvplot(
+        local_fit, data = clean_survival_subset, pval = TRUE, conf.int = FALSE,
+        risk.table = TRUE, palette = c("#D35400", "#27AE60"),
+        legend.labs = c("High Blast Load", "Low Blast Load"),
+        xlab = "Follow-up Duration (Days)", ylab = "Survival Probability",
+        title = "LUMHS Local Cohort Internal Survival Kinetic Kinetics",
+        risk.table.height = 0.22, tables.theme = survminer::theme_cleantable()
+      )
+      
+      png("Figure_4_Local_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
+      survminer:::print.ggsurvplot(local_survival_plot, newpage = FALSE)
+      dev.off()
+      message("SUCCESS: Figure 4 successfully generated and saved to your project directory!")
+      
+    } else {
+      message("NOTE: Optional local survival metrics were missing or fell below validation row thresholds. Phase 3 exited safely without generating Figure 4.")
+    }
