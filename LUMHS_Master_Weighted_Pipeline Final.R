@@ -53,8 +53,13 @@ clinical_data_raw <- as.data.frame(colData(laml_mae))
 buffa_15_genes <- c("ACOT7", "ADM", "ALDOA", "CDKN3", "ENO1", "LDHA", "MIF", 
                     "MRPS17", "NDRG1", "P4HA1", "PGAM1", "SLC2A1", "TPI1", "TUBB6", "VEGFA")
 
+# FIXED: Strip out any Entrez ID vertical bar extensions (e.g., converting "ACOT7|641" to "ACOT7")
+# to guarantee alignment with the 15-gene signature vector.
+aml_matrix_raw$gene_name <- sub("\\|.*", "", rownames(raw_assay))
+
 b15_matrix <- aml_matrix_raw[aml_matrix_raw$gene_name %in% buffa_15_genes, ]
 message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target features out of 15 Buffa genes."))
+
 # ------------------------------------------------------------------------------
 # 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES
 # ------------------------------------------------------------------------------
@@ -91,17 +96,21 @@ aml_clean_clinical <- clinical_data_raw %>%
 # 5. LONG TRANSFORMATION AND CONVERSION VIA PRIMARY SOLID/BLOOD ALIGNMENT
 # ------------------------------------------------------------------------------
 b15_long <- b15_matrix %>%
-  pivot_longer(cols = -gene_name, names_to = "raw_header", values_to = "expression_value") %>%
-  # FIXED: Updated pattern mapping to handle both hyphens (-) and periods (.) dynamically
-  mutate(sample_barcode = str_extract(raw_header, "TCGA[\\.-][A-Z0-9]{2}[\\.-][A-Z0-9]{4}[\\.-]0[13][A-Z]")) %>%
-  filter(!is.na(sample_barcode)) %>%
-  # Normalize format to hyphens for seamless downstream merging
-  mutate(sample_barcode = str_replace_all(sample_barcode, "\\.", "-")) %>%
-  dplyr::mutate(patient_id = substr(sample_barcode, 1, 12))
-  mutate(log_val = log2(expression_value + 1)) %>%
-  group_by(gene_name) %>%
-  mutate(z_score = as.numeric(scale(log_val))) %>%
-  ungroup()
+  # Explicitly declare columns to pivot defensively
+  tidyr::pivot_longer(
+    cols = tidyr::nested_side_relocate(colnames(b15_matrix)[colnames(b15_matrix) != "gene_name"]), 
+    names_to = "raw_header", 
+    values_to = "expression_value"
+  ) %>%
+  dplyr::mutate(sample_barcode = stringr::str_extract(raw_header, "TCGA[\\.-][A-Z0-9]{2}[\\.-][A-Z0-9]{4}[\\.-]0[13][A-Z]")) %>%
+  dplyr::filter(!is.na(sample_barcode)) %>%
+  dplyr::mutate(sample_barcode = stringr::str_replace_all(sample_barcode, "\\.", "-")) %>%
+  dplyr::mutate(patient_id = substr(sample_barcode, 1, 12)) %>%
+  dplyr::mutate(log_val = log2(expression_value + 1)) %>%
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(z_score = as.numeric(scale(log_val))) %>%
+  dplyr::ungroup()
+
 
 # ------------------------------------------------------------------------------
 # 6. WIDE ANALYTICAL FORMATTING & COHORT INTERSECTION
