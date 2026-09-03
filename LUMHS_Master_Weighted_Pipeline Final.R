@@ -203,7 +203,7 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
                           names_to = "Parameter", values_to = "Percentage")
     
     # Create clean panel labels
-    panel_labels = c(
+    panel_labels <- c(
       "bone_marrow_blast" = "Bone Marrow Blast Infiltration (%)",
       "bone_marrow_neutrophil" = "Bone Marrow Mature Neutrophils (%)"
     )
