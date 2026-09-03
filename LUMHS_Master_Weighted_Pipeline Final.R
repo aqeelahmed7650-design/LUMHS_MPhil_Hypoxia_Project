@@ -346,3 +346,34 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
 
 save.image(file = "LUMHS_Hypoxia_Project_Processed_Outputs.RData")
 message("--- SUCCESS: Master Production Pipeline executed with zero errors. ---")
+# --------------------------------------------------------------------------
+# FINAL MODULE: AUTOMATED CLINICAL "TABLE 1" DESCRIPTIVE SUMMARY
+# --------------------------------------------------------------------------
+message("Generating baseline clinical summary report...")
+
+# 1. Calculate anemic status dynamically based on WHO guidelines (<11 g/dL)
+if("hemoglobin_level" %in% colnames(local_data)) {
+  local_data$anemia_status <- ifelse(local_data$hemoglobin_level < 11, "Anemic", "Normal")
+} else {
+  local_data$anemia_status <- "Not Recorded"
+}
+
+# 2. Build the structural text summary matrix
+clinical_summary <- data.frame(
+  Metric = c("Total Patients (n)", 
+             "Mean BM Blast Infiltration (%)", 
+             "Mean Peripheral Myeloid Cells (%)", 
+             "Patients with Nutritional Anemia (%)"),
+  Value = c(
+    nrow(local_data),
+    round(mean(local_data$bone_marrow_blast, na.rm = TRUE), 2),
+    round(mean(local_data$peripheral_blood_myeloid, na.rm = TRUE), 2),
+    paste0(sum(local_data$anemia_status == "Anemic", na.rm = TRUE), " (", 
+           round((sum(local_data$anemia_status == "Anemic", na.rm = TRUE) / nrow(local_data)) * 100, 1), "%)")
+  )
+)
+
+# 3. Print to console and export cleanly as a CSV file for your manuscript text
+print(clinical_summary)
+write.csv(clinical_summary, "Table_1_Clinical_Summary.csv", row.names = FALSE)
+message("Table 1 successfully generated and exported as 'Table_1_Clinical_Summary.csv'!")
