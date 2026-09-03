@@ -93,17 +93,16 @@ aml_clean_clinical <- clinical_data_raw %>%
   dplyr::select(patient_id, bone_marrow_blast, peripheral_blood_myeloid)
 
 # ------------------------------------------------------------------------------
-# ------------------------------------------------------------------------------
 # 5. LONG TRANSFORMATION AND CONVERSION VIA PRIMARY SOLID/BLOOD ALIGNMENT
 # ------------------------------------------------------------------------------
 b15_long <- b15_matrix %>%
-  # FIXED: Swapped out internal helper function with standard column exclusion syntax
   tidyr::pivot_longer(
     cols = -gene_name, 
     names_to = "raw_header", 
     values_to = "expression_value"
   ) %>%
-  dplyr::mutate(sample_barcode = stringr::str_extract(raw_header, "TCGA[\\.-][A-Z0-9]{2}[\\.-][A-Z0-9]{4}[\\.-]0[A-Z]")) %>%
+  # FIXED: Corrected pattern matching to capture two-digit sample codes (e.g., 01A, 03A)
+  dplyr::mutate(sample_barcode = stringr::str_extract(raw_header, "TCGA[\\.-][A-Z0-9]{2}[\\.-][A-Z0-9]{4}[\\.-][0-9]{2}[A-Z]")) %>%
   dplyr::filter(!is.na(sample_barcode)) %>%
   dplyr::mutate(sample_barcode = stringr::str_replace_all(sample_barcode, "\\.", "-")) %>%
   dplyr::mutate(patient_id = substr(sample_barcode, 1, 12)) %>%
@@ -111,7 +110,6 @@ b15_long <- b15_matrix %>%
   dplyr::group_by(gene_name) %>%
   dplyr::mutate(z_score = as.numeric(scale(log_val))) %>%
   dplyr::ungroup()
-
 # ------------------------------------------------------------------------------
 # 6. WIDE ANALYTICAL FORMATTING & COHORT INTERSECTION
 # ------------------------------------------------------------------------------
