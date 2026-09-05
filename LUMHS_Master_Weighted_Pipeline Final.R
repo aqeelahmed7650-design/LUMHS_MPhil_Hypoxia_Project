@@ -202,13 +202,14 @@ message("Figure 1 successfully generated and saved to your project directory!")
 write.csv(lumhs_master_data, "LUMHS_Global_Survival_Validated_Data.csv", row.names = FALSE)
 
 # ==============================================================================
+# ==============================================================================
 # PHASE 3: LOCAL TO GLOBAL CROSS-POPULATION COMPARISON (LUMHS VALIDATION)
 # ==============================================================================
 if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   local_data <- read.csv("LUMHS_Local_AML_Cohort.csv", na.strings = c("NA", " ", "", "."))
   
   colnames(local_data) <- tolower(colnames(local_data))
-  required_columns <- c("bone_marrow_blast", "peripheral_blood_myeloid")
+  required_columns <- c("bone_marrow_blast", "peripheral_blood_myeloid", "hemoglobin_level")
   missing_cols <- setdiff(required_columns, colnames(local_data))
   
   if (length(missing_cols) > 0) {
@@ -217,24 +218,26 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
 
   if(nrow(local_data) > 1) {
     global_comparison_df <- lumhs_master_data %>%
-      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid) %>%
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
       dplyr::mutate(Cohort = "Global (TCGA)") %>%
-      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid))
+      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid) & !is.na(hemoglobin_level))
     
     local_comparison_df <- local_data %>%
-      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid) %>%
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
       dplyr::mutate(Cohort = "Local (LUMHS)") %>%
-      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid))
+      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid) & !is.na(hemoglobin_level))
     
     combined_cohorts_df <- rbind(global_comparison_df, local_comparison_df)
     
-    # FIXED: Explicitly declared var.equal = FALSE to confirm Welch's variance protection
+    # WELCH'S VARIANCE PROTECTION T-TESTS
     blast_t_test <- t.test(bone_marrow_blast ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
     myeloid_t_test <- t.test(peripheral_blood_myeloid ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
+    hb_t_test <- t.test(hemoglobin_level ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
     
     print("--- CROSS-POPULATION BASELINE DIFFERENCES ---")
     print(blast_t_test)
     print(myeloid_t_test)
+    print(hb_t_test)
     
     local_spearman <- cor.test(local_comparison_df$bone_marrow_blast, 
                                local_comparison_df$peripheral_blood_myeloid, 
@@ -252,7 +255,6 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
         plot.subtitle = element_text(size = 10, hjust = 0.5, face = "italic"),
         panel.grid.minor = element_blank()
       ) +
-      # FIXED: Updated 'p =' string to capitalized, italicized 'P' style-guide compliance
       ggplot2::labs(
         title = "Local Marrow Crowding Dynamics",
         subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (P = ", format.pval(local_spearman$p.value, digits = 4), ")"),
@@ -263,25 +265,27 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     ggplot2::ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
     message("Figure 3 successfully generated and saved to your project directory!")
 
+    # AUTOMATED 3-PANEL PIVOT GENERATION
     plotting_df <- combined_cohorts_df %>%
-      tidyr::pivot_longer(cols = c(bone_marrow_blast, peripheral_blood_myeloid), 
+      tidyr::pivot_longer(cols = c(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level), 
                           names_to = "Parameter", values_to = "Percentage")
     
     panel_labels <- c(
       "bone_marrow_blast" = "Bone Marrow Blast Infiltration (%)",
-      "peripheral_blood_myeloid" = "Peripheral Blood Myeloid Cells (%)"
+      "peripheral_blood_myeloid" = "Peripheral Blood Myeloid Cells (%)",
+      "hemoglobin_level" = "Baseline Hemoglobin Level (g/dL)"
     )
     
     comp_boxplot <- ggplot2::ggplot(plotting_df, aes(x = Cohort, y = Percentage, fill = Cohort)) +
       ggplot2::geom_boxplot(alpha = 0.7, outlier.shape = 16, width = 0.5, color = "#2C3E50") +
       ggplot2::geom_jitter(width = 0.15, alpha = 0.3, size = 1.5, aes(color = Cohort)) +
-      ggplot2::facet_wrap(~Parameter, scales = "free_y", labeller = as_labeller(panel_labels)) +
+      ggplot2::facet_wrap(~Parameter, scales = "free_y", labeller = as_labeller(panel_labels), ncol = 3) +
       ggplot2::scale_fill_manual(values = c("#3498DB", "#E74C3C")) +    
       ggplot2::scale_color_manual(values = c("#2980B9", "#C0392B")) +  
       ggplot2::theme_bw(base_size = 12) +
       ggplot2::theme(
         strip.background = element_rect(fill = "#ECF0F1", color = "#BDC3C7"),
-        strip.text = element_text(face = "bold", color = "#2C3E50", size = 11),
+        strip.text = element_text(face = "bold", color = "#2C3E50", size = 10),
         axis.title.x = element_blank(),
         axis.text.x = element_text(face = "bold", size = 11),
         legend.position = "none",
@@ -290,11 +294,11 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
       ) +
       ggplot2::labs(
         title = "Cross-Population Bio-Audit: Global Reference vs. Local Sindh Cohort",
-        y = "Tissue Compartment Density (%)"
+        y = "Tissue Compartment Metrics / Clinical Density"
       )
     
-    ggplot2::ggsave("Figure_2_Cross_Population_Comparison.png", plot = comp_boxplot, width = 8, height = 5, dpi = 300)
-    message("Figure 2 successfully generated and saved to your project directory!")
+    ggplot2::ggsave("Figure_2_Cross_Population_Comparison.png", plot = comp_boxplot, width = 11, height = 5, dpi = 300)
+    message("Figure 2 successfully generated as a 3-panel visual asset!")
     
     # --------------------------------------------------------------------------
     # OPTIONAL MODULE: LOCAL LONGITUDINAL SURVIVAL CLINICAL VERIFICATION
@@ -339,6 +343,35 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
       message("NOTE: Optional local survival metrics were missing or fell below validation row thresholds. Phase 3 exited safely without generating Figure 4.")
     }
     
+    # --------------------------------------------------------------------------
+    # FINAL MODULE: AUTOMATED CLINICAL "TABLE 1" DESCRIPTIVE SUMMARY
+    # --------------------------------------------------------------------------
+    message("Generating baseline clinical summary report...")
+
+    if("hemoglobin_level" %in% colnames(local_data)) {
+      local_data$anemia_status <- ifelse(local_data$hemoglobin_level < 11, "Anemic", "Normal")
+    } else {
+      local_data$anemia_status <- "Not Recorded"
+    }
+
+    clinical_summary <- data.frame(
+      Metric = c("Total Patients (n)", 
+                 "Mean BM Blast Infiltration (%)", 
+                 "Mean Peripheral Myeloid Cells (%)", 
+                 "Patients with Nutritional Anemia (%)"),
+      Value = c(
+        nrow(local_data),
+        round(mean(local_data$bone_marrow_blast, na.rm = TRUE), 2),
+        round(mean(local_data$peripheral_blood_myeloid, na.rm = TRUE), 2),
+        paste0(sum(local_data$anemia_status == "Anemic", na.rm = TRUE), " (", 
+               round((sum(local_data$anemia_status == "Anemic", na.rm = TRUE) / nrow(local_data)) * 100, 1), "%)")
+      )
+    )
+
+    print(clinical_summary)
+    write.csv(clinical_summary, "Table_1_Clinical_Summary.csv", row.names = FALSE)
+    message("Table 1 successfully generated and exported as 'Table_1_Clinical_Summary.csv'!")
+    
   } else {
     message("LUMHS_Local_AML_Cohort.csv tracker template detected. Code is primed and waiting for data entry.")
   }
@@ -346,34 +379,3 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
 
 save.image(file = "LUMHS_Hypoxia_Project_Processed_Outputs.RData")
 message("--- SUCCESS: Master Production Pipeline executed with zero errors. ---")
-# --------------------------------------------------------------------------
-# FINAL MODULE: AUTOMATED CLINICAL "TABLE 1" DESCRIPTIVE SUMMARY
-# --------------------------------------------------------------------------
-message("Generating baseline clinical summary report...")
-
-# 1. Calculate anemic status dynamically based on WHO guidelines (<11 g/dL)
-if("hemoglobin_level" %in% colnames(local_data)) {
-  local_data$anemia_status <- ifelse(local_data$hemoglobin_level < 11, "Anemic", "Normal")
-} else {
-  local_data$anemia_status <- "Not Recorded"
-}
-
-# 2. Build the structural text summary matrix
-clinical_summary <- data.frame(
-  Metric = c("Total Patients (n)", 
-             "Mean BM Blast Infiltration (%)", 
-             "Mean Peripheral Myeloid Cells (%)", 
-             "Patients with Nutritional Anemia (%)"),
-  Value = c(
-    nrow(local_data),
-    round(mean(local_data$bone_marrow_blast, na.rm = TRUE), 2),
-    round(mean(local_data$peripheral_blood_myeloid, na.rm = TRUE), 2),
-    paste0(sum(local_data$anemia_status == "Anemic", na.rm = TRUE), " (", 
-           round((sum(local_data$anemia_status == "Anemic", na.rm = TRUE) / nrow(local_data)) * 100, 1), "%)")
-  )
-)
-
-# 3. Print to console and export cleanly as a CSV file for your manuscript text
-print(clinical_summary)
-write.csv(clinical_summary, "Table_1_Clinical_Summary.csv", row.names = FALSE)
-message("Table 1 successfully generated and exported as 'Table_1_Clinical_Summary.csv'!")
