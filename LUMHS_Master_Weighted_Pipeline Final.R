@@ -1,14 +1,13 @@
 # ==============================================================================
-# MASTER COMPILATION PIPELINE: COX-WEIGHTED 15-GENE BUFFA PROGNOSTIC MODEL
-# Baseline Global Dataset Phase - LUMHS MPhil Research Initiative (2027)
-# Principal Investigator: Dr. Aqeel Ahmed (MD)
+# Thesis Project: 15-Gene Hypoxia Model Validation
+# Institution: LUMHS MPhil Research Track
+# Author: Dr. Aqeel Ahmed (MD)
+# Year: 2027
 # ==============================================================================
 
-# ------------------------------------------------------------------------------
-# 1. AUTOMATED BOOTSTRAPPING FOR CRAN AND BIOCONDUCTOR INFRASTRUCTURES
-# ------------------------------------------------------------------------------
-message("Initializing package dependency audit toolsets...")
-options(repos = c(CRAN = "https://r-project.org"))
+# --- Section 1: Check environment and load required packages ---
+message("Checking dependencies...")
+options(repos = c(CRAN = "https://rstudio.com"))
 
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
@@ -38,10 +37,8 @@ library(ggplot2)
 
 set.seed(2027)
 
-# ------------------------------------------------------------------------------
-# 2. DYNAMIC PROGRAMMATIC FETCH & OFFICIAL MAP LINKING
-# ------------------------------------------------------------------------------
-message("Downloading raw TCGA-LAML multi-assay experiment data directly from API...")
+# --- Section 2: Load global TCGA-LAML dataset ---
+message("Importing TCGA-LAML baseline dataset...")
 laml_mae <- curatedTCGAData::curatedTCGAData(disease = "LAML", assays = c("RNASeq2GeneNorm"), version = "2.0.1", dry.run = FALSE)
 
 target_assay_name <- names(MultiAssayExperiment::assays(laml_mae))[1]
@@ -59,23 +56,20 @@ if (length(rownames(aml_matrix_raw)) == 0) {
 
 clinical_data_raw <- as.data.frame(MultiAssayExperiment::colData(laml_mae))
 clinical_data_raw$primary_id <- rownames(clinical_data_raw)
-# ------------------------------------------------------------------------------
-# 3. INITIALIZE THE BUFFA 15-GENE HYPOXIA CLASSIFIER VECTOR
-# ------------------------------------------------------------------------------
+
+# --- Section 3: Define Buffa 15-gene signature ---
 buffa_15_genes <- c("ACOT7", "ADM", "ALDOA", "CDKN3", "ENO1", "LDHA", "MIF", 
                     "MRPS17", "NDRG1", "P4HA1", "PGAM1", "SLC2A1", "TPI1", "TUBB6", "VEGFA")
 
 aml_matrix_raw$gene_name <- sub("\\|.*", "", rownames(aml_matrix_raw))
 b15_matrix <- aml_matrix_raw[aml_matrix_raw$gene_name %in% buffa_15_genes, ]
-message(paste("Genomic Alignment Success: Isolated", nrow(b15_matrix), "target features out of 15 Buffa genes."))
+message(paste("Matched", nrow(b15_matrix), "out of 15 target signature loci."))
 
-# ------------------------------------------------------------------------------
-# 4. EXTRACT AND CLEAN DIRECT CLINICAL SURVIVAL TIMELINES WITH SAFE REGEX LOOKUPS
-# ------------------------------------------------------------------------------
+# --- Section 4: Process clinical survival timelines and demographics ---
 all_cols <- colnames(clinical_data_raw)
 clinical_data_raw$fallback_na <- as.numeric(NA)
 
-# Advanced Regex Trackers: Safely search for indices to protect against bounds errors
+# Find target clinical variables using keyword matching
 age_idx <- grep("age|birth|diagnostic_age", all_cols, ignore.case = TRUE)
 age_col <- if(length(age_idx) > 0) all_cols[age_idx[1]] else "fallback_na"
 
@@ -85,7 +79,7 @@ survival_base <- clinical_data_raw %>%
     time_days = ifelse(!is.na(days_to_death), as.numeric(days_to_death), as.numeric(days_to_last_followup)),
     status_numeric = ifelse(vital_status == 1 | grepl("dead|deceased", vital_status, ignore.case = TRUE), 1, 0),
     raw_age_val = abs(as.numeric(.[[age_col]])),
-    # Self-correcting step: if age is stored in days (e.g. 20000), dynamically convert it to years
+    # Convert age days to years if needed
     age_years = ifelse(!is.na(raw_age_val) & raw_age_val > 150, raw_age_val / 365.25, raw_age_val)
   ) %>%
   dplyr::filter(!is.na(time_days) & time_days > 0) %>%
@@ -104,9 +98,7 @@ aml_clean_clinical <- clinical_data_raw %>%
   ) %>%
   dplyr::select(primary_id, bone_marrow_blast, peripheral_blood_myeloid)
 
-# ------------------------------------------------------------------------------
-# 5. LONG TRANSFORMATION USING MULTI-ASSAY EXPERIMENT CONNECTIONS
-# ------------------------------------------------------------------------------
+# --- Section 5: Log-transform and normalize genomic data ---
 tcga_barcode_cols <- colnames(b15_matrix)[grepl("^TCGA|^LAML", colnames(b15_matrix), ignore.case = TRUE)]
 
 b15_long <- b15_matrix %>%
@@ -118,10 +110,7 @@ b15_long <- b15_matrix %>%
   dplyr::group_by(gene_name) %>%
   dplyr::mutate(z_score = as.numeric(scale(log_val))) %>%
   dplyr::ungroup()
-
-# ------------------------------------------------------------------------------
-# 6. WIDE ANALYTICAL FORMATTING & COHORT INTERSECTION
-# ------------------------------------------------------------------------------
+# --- Section 6: Format to wide structure and merge clinical data ---
 wide_expression <- b15_long %>%
   dplyr::select(patient_id, gene_name, z_score) %>%
   dplyr::group_by(patient_id, gene_name) %>%
@@ -130,27 +119,23 @@ wide_expression <- b15_long %>%
   dplyr::rename(primary_id = patient_id)
 
 cox_train_df <- dplyr::inner_join(survival_base, wide_expression, by = "primary_id")
-message(paste("CRITICAL MERGE VERIFICATION: Successfully synchronized", nrow(cox_train_df), "matching patient records."))
+message(paste("Merged dataset contains:", nrow(cox_train_df), "patient records."))
 
-# ------------------------------------------------------------------------------
-# 7. DYNAMIC UNIVARIATE COX MODEL GENERATION & PROACTIVE PROPORTIONAL HAZARDS AUDIT
-# ------------------------------------------------------------------------------
+# --- Section 7: Run univariate Cox regression and evaluate PH assumption ---
 gene_weights <- c()
 available_genes <- intersect(buffa_15_genes, colnames(wide_expression))
 
-print("--- ADVANCED COMPUTATIONAL AUDIT: PROPORTIONAL HAZARDS ASSUMPTION LOG ---")
+print("--- Check Proportional Hazards Assumption ---")
 for(gene in available_genes) {
   formula_string <- paste("Surv(time_days, status_numeric) ~", paste0("`", gene, "`"))
   cox_model <- survival::coxph(as.formula(formula_string), data = cox_train_df)
   gene_weights[gene] <- coef(cox_model)
   
   ph_test <- survival::cox.zph(cox_model)
-  print(paste("Locus:", gene, "| Schoenfeld Residual global p-value =", round(ph_test$table[nrow(ph_test$table), 3], 4)))
+  print(paste("Gene:", gene, "| Global p-value =", round(ph_test$table[nrow(ph_test$table), 3], 4)))
 }
 
-# ------------------------------------------------------------------------------
-# 8. RISK CALCULATIONS, STRATIFICATION & ADAPTIVE MULTIVARIABLE COVARYING ADJUSTMENT
-# ------------------------------------------------------------------------------
+# --- Section 8: Calculate risk scores and construct multivariable model ---
 weighted_scores <- cox_train_df %>%
   dplyr::rowwise() %>%
   dplyr::mutate(weighted_hypoxia_score = sum(c_across(dplyr::all_of(available_genes)) * gene_weights, na.rm = TRUE)) %>%
@@ -166,8 +151,7 @@ lumhs_master_data$hypoxia_group <- ifelse(lumhs_master_data$weighted_hypoxia_sco
 
 final_fit <- survival::survfit(survival::Surv(time_days, status_numeric) ~ hypoxia_group, data = lumhs_master_data)
 
-# FIXED: Self-Healing Adaptive Multivariable Engine. Excludes variables if they are entirely missing 
-# or NA to systematically prevent the "No (non-missing) observations" crash.
+# Check missing values before running regression to avoid runtime crashes
 active_covariates <- c("hypoxia_group")
 
 if("age_years" %in% colnames(lumhs_master_data)) {
@@ -177,14 +161,12 @@ if("bone_marrow_blast" %in% colnames(lumhs_master_data)) {
   if(sum(!is.na(lumhs_master_data$bone_marrow_blast)) > 10) active_covariates <- c(active_covariates, "bone_marrow_blast")
 }
 
-print("--- PROACTIVE INDEPENDENT COVARYING AUDIT: ADAPTIVE MULTIVARIABLE MODEL ---")
+print("--- Multivariable Cox Regression Model ---")
 mv_formula_string <- paste("survival::Surv(time_days, status_numeric) ~", paste(active_covariates, collapse = " + "))
 multivariable_model <- survival::coxph(as.formula(mv_formula_string), data = lumhs_master_data)
 print(summary(multivariable_model))
-# ------------------------------------------------------------------------------
-# ------------------------------------------------------------------------------
-# 9. GRAPHICAL RENDERING & TABULAR OUTPUT STORAGE (FIGURE 1)
-# ------------------------------------------------------------------------------
+
+# --- Section 9: Plot global survival curves and export results ---
 final_plot <- survminer::ggsurvplot(
   final_fit, data = lumhs_master_data, pval = TRUE, conf.int = TRUE,
   risk.table = TRUE, palette = c("#E41A1C", "#377EB8"), 
@@ -197,14 +179,11 @@ final_plot <- survminer::ggsurvplot(
 png("Figure_1_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
 survminer:::print.ggsurvplot(final_plot, newpage = FALSE)
 dev.off()
-message("Figure 1 successfully generated and saved to your project directory!")
+message("Saved Figure 1 to working directory.")
 
 write.csv(lumhs_master_data, "LUMHS_Global_Survival_Validated_Data.csv", row.names = FALSE)
 
-# ==============================================================================
-# ==============================================================================
-# PHASE 3: LOCAL TO GLOBAL CROSS-POPULATION COMPARISON (LUMHS VALIDATION)
-# ==============================================================================
+   # --- Section 10: Local cohort integration and cross-population analysis ---
 if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   local_data <- read.csv("LUMHS_Local_AML_Cohort.csv", na.strings = c("NA", " ", "", "."))
   
@@ -213,7 +192,7 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   missing_cols <- setdiff(required_columns, colnames(local_data))
   
   if (length(missing_cols) > 0) {
-    stop(paste("CRITICAL ERROR: The template is missing columns:", paste(missing_cols, collapse = ", ")))
+    stop(paste("Data template is missing columns:", paste(missing_cols, collapse = ", ")))
   }
 
   if(nrow(local_data) > 1) {
@@ -229,23 +208,25 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     
     combined_cohorts_df <- rbind(global_comparison_df, local_comparison_df)
     
-    # WELCH'S VARIANCE PROTECTION T-TESTS
+    # Run independent samples t-tests (unequal variances assumed)
     blast_t_test <- t.test(bone_marrow_blast ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
     myeloid_t_test <- t.test(peripheral_blood_myeloid ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
     hb_t_test <- t.test(hemoglobin_level ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
     
-    print("--- CROSS-POPULATION BASELINE DIFFERENCES ---")
+    print("--- Cohort t-test results ---")
     print(blast_t_test)
     print(myeloid_t_test)
     print(hb_t_test)
     
+    # Assess correlation between blast load and peripheral myeloid cells
     local_spearman <- cor.test(local_comparison_df$bone_marrow_blast, 
                                local_comparison_df$peripheral_blood_myeloid, 
                                method = "spearman", exact = FALSE)
     
-    print("--- LOCAL SINDH COHORT CORRELATION RESULTS ---")
+    print("--- Local cohort Spearman correlation results ---")
     print(local_spearman)
     
+    # Generate Figure 3 (Scatterplot with LOESS smoothing)
     comp_scatterplot <- ggplot2::ggplot(local_comparison_df, aes(x = bone_marrow_blast, y = peripheral_blood_myeloid)) +
       ggplot2::geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
       ggplot2::geom_smooth(method = "loess", formula = y ~ x, color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
@@ -263,9 +244,9 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
       )
 
     ggplot2::ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
-    message("Figure 3 successfully generated and saved to your project directory!")
+    message("Saved Figure 3.")
 
-    # AUTOMATED 3-PANEL PIVOT GENERATION
+    # Format data to long structure for boxplot faceting
     plotting_df <- combined_cohorts_df %>%
       tidyr::pivot_longer(cols = c(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level), 
                           names_to = "Parameter", values_to = "Percentage")
@@ -276,6 +257,7 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
       "hemoglobin_level" = "Baseline Hemoglobin Level (g/dL)"
     )
     
+    # Generate Figure 2 (Multi-panel comparative boxplot)
     comp_boxplot <- ggplot2::ggplot(plotting_df, aes(x = Cohort, y = Percentage, fill = Cohort)) +
       ggplot2::geom_boxplot(alpha = 0.7, outlier.shape = 16, width = 0.5, color = "#2C3E50") +
       ggplot2::geom_jitter(width = 0.15, alpha = 0.3, size = 1.5, aes(color = Cohort)) +
@@ -298,11 +280,8 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
       )
     
     ggplot2::ggsave("Figure_2_Cross_Population_Comparison.png", plot = comp_boxplot, width = 11, height = 5, dpi = 300)
-    message("Figure 2 successfully generated as a 3-panel visual asset!")
-    
-    # --------------------------------------------------------------------------
-    # OPTIONAL MODULE: LOCAL LONGITUDINAL SURVIVAL CLINICAL VERIFICATION
-    # --------------------------------------------------------------------------
+    message("Saved Figure 2.")
+     # --- Section 11: Local cohort survival analysis (optional module) ---
     run_local_survival <- FALSE
     
     if("local_time_days" %in% colnames(local_data) & "local_status" %in% colnames(local_data)) {
@@ -316,7 +295,7 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     }
     
     if(run_local_survival) {
-      message("Longitudinal metrics confirmed. Executing Optional Local Survival validation module...")
+      message("Survival indices confirmed. Running local survival module...")
       
       median_blast <- median(clean_survival_subset$bone_marrow_blast, na.rm = TRUE)
       clean_survival_subset$blast_group <- ifelse(clean_survival_subset$bone_marrow_blast > median_blast, 
@@ -337,16 +316,14 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
       png("Figure_4_Local_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
       survminer:::print.ggsurvplot(local_survival_plot, newpage = FALSE)
       dev.off()
-      message("SUCCESS: Figure 4 successfully generated and saved to your project directory!")
+      message("Saved Figure 4.")
       
     } else {
-      message("NOTE: Optional local survival metrics were missing or fell below validation row thresholds. Phase 3 exited safely without generating Figure 4.")
+      message("Local survival parameters insufficient. Skipping Figure 4 extraction.")
     }
     
-    # --------------------------------------------------------------------------
-    # FINAL MODULE: AUTOMATED CLINICAL "TABLE 1" DESCRIPTIVE SUMMARY
-    # --------------------------------------------------------------------------
-    message("Generating baseline clinical summary report...")
+    # --- Section 12: Generate baseline summary matrix (Table 1) ---
+    message("Compiling baseline summary data...")
 
     if("hemoglobin_level" %in% colnames(local_data)) {
       local_data$anemia_status <- ifelse(local_data$hemoglobin_level < 11, "Anemic", "Normal")
@@ -370,12 +347,14 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
 
     print(clinical_summary)
     write.csv(clinical_summary, "Table_1_Clinical_Summary.csv", row.names = FALSE)
-    message("Table 1 successfully generated and exported as 'Table_1_Clinical_Summary.csv'!")
+    message("Saved Table 1 summary matrix to working directory.")
     
   } else {
-    message("LUMHS_Local_AML_Cohort.csv tracker template detected. Code is primed and waiting for data entry.")
+    message("Template file detected. Awaiting data entry.")
   }
 }
 
 save.image(file = "LUMHS_Hypoxia_Project_Processed_Outputs.RData")
-message("--- SUCCESS: Master Production Pipeline executed with zero errors. ---")
+message("Pipeline execution completed successfully.")
+
+  
