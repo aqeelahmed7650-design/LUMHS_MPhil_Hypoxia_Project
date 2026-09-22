@@ -91,12 +91,16 @@ b_col <- if(length(blast_idx) > 0) all_cols[blast_idx[1]] else "fallback_na"
 myeloid_idx <- grep("myeloid|peripheral", all_cols, ignore.case = TRUE)
 m_col <- if(length(myeloid_idx) > 0) all_cols[myeloid_idx[1]] else "fallback_na"
 
+hb_idx <- grep("hb|hemoglobin", all_cols, ignore.case = TRUE)
+hb_col <- if(length(hb_idx) > 0) all_cols[hb_idx[1]] else "fallback_na"
+
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
     bone_marrow_blast = as.numeric(clinical_data_raw[[b_col]]),
-    peripheral_blood_myeloid = as.numeric(clinical_data_raw[[m_col]])
+    peripheral_blood_myeloid = as.numeric(clinical_data_raw[[m_col]]),
+    hemoglobin_level = as.numeric(clinical_data_raw[[hb_col]])
   ) %>%
-  dplyr::select(primary_id, bone_marrow_blast, peripheral_blood_myeloid)
+  dplyr::select(primary_id, bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level)
 
 # --- Section 5: Log-transform and normalize genomic data ---
 tcga_barcode_cols <- colnames(b15_matrix)[grepl("^TCGA|^LAML", colnames(b15_matrix), ignore.case = TRUE)]
@@ -110,6 +114,7 @@ b15_long <- b15_matrix %>%
   dplyr::group_by(gene_name) %>%
   dplyr::mutate(z_score = as.numeric(scale(log_val))) %>%
   dplyr::ungroup()
+
 # --- Section 6: Format to wide structure and merge clinical data ---
 wide_expression <- b15_long %>%
   dplyr::select(patient_id, gene_name, z_score) %>%
@@ -120,7 +125,6 @@ wide_expression <- b15_long %>%
 
 cox_train_df <- dplyr::inner_join(survival_base, wide_expression, by = "primary_id")
 message(paste("Merged dataset contains:", nrow(cox_train_df), "patient records."))
-
 # --- Section 7: Run univariate Cox regression and evaluate PH assumption ---
 gene_weights <- c()
 available_genes <- intersect(buffa_15_genes, colnames(wide_expression))
@@ -132,7 +136,8 @@ for(gene in available_genes) {
   gene_weights[gene] <- coef(cox_model)
   
   ph_test <- survival::cox.zph(cox_model)
-  print(paste("Gene:", gene, "| Global p-value =", round(ph_test$table[nrow(ph_test$table), 3], 4)))
+  # Uses safe matrix bracket index to prevent backslash interpretation errors
+  print(paste("Gene:", gene, "| Global p-value =", round(ph_test[["table"]][nrow(ph_test[["table"]]), 3], 4)))
 }
 
 # --- Section 8: Calculate risk scores and construct multivariable model ---
@@ -145,8 +150,8 @@ weighted_scores <- cox_train_df %>%
 lumhs_master_data <- dplyr::inner_join(aml_clean_clinical, weighted_scores, by = "primary_id") %>%
   dplyr::inner_join(survival_base, by = "primary_id")
 
-median_weighted <- median(lumhs_master_data$weighted_hypoxia_score, na.rm = TRUE)
-lumhs_master_data$hypoxia_group <- ifelse(lumhs_master_data$weighted_hypoxia_score > median_weighted, 
+median_weighted <- median(lumhs_master_data[["weighted_hypoxia_score"]], na.rm = TRUE)
+lumhs_master_data[["hypoxia_group"]] <- ifelse(lumhs_master_data[["weighted_hypoxia_score"]] > median_weighted, 
                                           "High Risk Hypoxia", "Low Risk Hypoxia")
 
 final_fit <- survival::survfit(survival::Surv(time_days, status_numeric) ~ hypoxia_group, data = lumhs_master_data)
@@ -155,10 +160,10 @@ final_fit <- survival::survfit(survival::Surv(time_days, status_numeric) ~ hypox
 active_covariates <- c("hypoxia_group")
 
 if("age_years" %in% colnames(lumhs_master_data)) {
-  if(sum(!is.na(lumhs_master_data$age_years)) > 10) active_covariates <- c(active_covariates, "age_years")
+  if(sum(!is.na(lumhs_master_data[["age_years"]])) > 10) active_covariates <- c(active_covariates, "age_years")
 }
 if("bone_marrow_blast" %in% colnames(lumhs_master_data)) {
-  if(sum(!is.na(lumhs_master_data$bone_marrow_blast)) > 10) active_covariates <- c(active_covariates, "bone_marrow_blast")
+  if(sum(!is.na(lumhs_master_data[["bone_marrow_blast"]])) > 10) active_covariates <- c(active_covariates, "bone_marrow_blast")
 }
 
 print("--- Multivariable Cox Regression Model ---")
@@ -183,7 +188,7 @@ message("Saved Figure 1 to working directory.")
 
 write.csv(lumhs_master_data, "LUMHS_Global_Survival_Validated_Data.csv", row.names = FALSE)
 
-   # --- Section 10: Local cohort integration and cross-population analysis ---
+# --- Section 10: Local cohort integration and cross-population analysis ---
 if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   local_data <- read.csv("LUMHS_Local_AML_Cohort.csv", na.strings = c("NA", " ", "", "."))
   
@@ -196,38 +201,59 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   }
 
   if(nrow(local_data) > 1) {
-    global_comparison_df <- lumhs_master_data %>%
-      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
+    # TIER 1 CELLULAR SELECTION: Pull entire cohort ignoring recent transfusion filters
+    global_cellular_df <- lumhs_master_data %>%
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid) %>%
       dplyr::mutate(Cohort = "Global (TCGA)") %>%
-      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid) & !is.na(hemoglobin_level))
+      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid))
     
-    local_comparison_df <- local_data %>%
-      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
+    local_cellular_df <- local_data %>%
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid) %>%
       dplyr::mutate(Cohort = "Local (LUMHS)") %>%
-      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid) & !is.na(hemoglobin_level))
+      dplyr::filter(!is.na(bone_marrow_blast) & !is.na(peripheral_blood_myeloid))
     
-    combined_cohorts_df <- rbind(global_comparison_df, local_comparison_df)
+    combined_cellular_df <- rbind(global_cellular_df, local_cellular_df)
     
-    # Run independent samples t-tests (unequal variances assumed)
-    blast_t_test <- t.test(bone_marrow_blast ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
-    myeloid_t_test <- t.test(peripheral_blood_myeloid ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
-    hb_t_test <- t.test(hemoglobin_level ~ Cohort, data = combined_cohorts_df, var.equal = FALSE)
+    # TIER 2 HEMOGLOBIN SELECTION: Isolate transfusion-naive metrics for Hb comparison
+    global_hb_df <- lumhs_master_data %>%
+      dplyr::select(hemoglobin_level) %>%
+      dplyr::mutate(Cohort = "Global (TCGA)") %>%
+      dplyr::filter(!is.na(hemoglobin_level))
+      
+    if("transfused_within_14_days" %in% colnames(local_data)) {
+      local_hb_df <- local_data %>%
+        dplyr::filter(transfused_within_14_days == "no" | transfused_within_14_days == 0 | is.na(transfused_within_14_days)) %>%
+        dplyr::select(hemoglobin_level) %>%
+        dplyr::mutate(Cohort = "Local (LUMHS)") %>%
+        dplyr::filter(!is.na(hemoglobin_level))
+    } else {
+      local_hb_df <- local_data %>%
+        dplyr::select(hemoglobin_level) %>%
+        dplyr::mutate(Cohort = "Local (LUMHS)") %>%
+        dplyr::filter(!is.na(hemoglobin_level))
+    }
+    
+    combined_hb_df <- rbind(global_hb_df, local_hb_df)
+    
+    # Run independent samples t-tests using safe tiered structures
+    blast_t_test <- t.test(bone_marrow_blast ~ Cohort, data = combined_cellular_df, var.equal = FALSE)
+    myeloid_t_test <- t.test(peripheral_blood_myeloid ~ Cohort, data = combined_cellular_df, var.equal = FALSE)
+    hb_t_test <- t.test(hemoglobin_level ~ Cohort, data = combined_hb_df, var.equal = FALSE)
     
     print("--- Cohort t-test results ---")
     print(blast_t_test)
     print(myeloid_t_test)
     print(hb_t_test)
     
-    # Assess correlation between blast load and peripheral myeloid cells
-    local_spearman <- cor.test(local_comparison_df$bone_marrow_blast, 
-                               local_comparison_df$peripheral_blood_myeloid, 
+    # Assess correlation between blast load and peripheral myeloid cells (Tier 1 complete sample size)
+    local_spearman <- cor.test(local_cellular_df[["bone_marrow_blast"]], 
+                               local_cellular_df[["peripheral_blood_myeloid"]], 
                                method = "spearman", exact = FALSE)
     
     print("--- Local cohort Spearman correlation results ---")
     print(local_spearman)
-    
-    # Generate Figure 3 (Scatterplot with LOESS smoothing)
-    comp_scatterplot <- ggplot2::ggplot(local_comparison_df, aes(x = bone_marrow_blast, y = peripheral_blood_myeloid)) +
+# Generate Figure 3 (Scatterplot with LOESS smoothing - Using full Tier 1 dataset)
+    comp_scatterplot <- ggplot2::ggplot(local_cellular_df, aes(x = bone_marrow_blast, y = peripheral_blood_myeloid)) +
       ggplot2::geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
       ggplot2::geom_smooth(method = "loess", formula = y ~ x, color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
       ggplot2::theme_bw(base_size = 12) +
@@ -245,6 +271,22 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
 
     ggplot2::ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
     message("Saved Figure 3.")
+
+    # Safely reconstruct combined_cohorts_df dynamically matching Two-Tiered rules for Figure 2
+    global_plotting_prep <- lumhs_master_data %>% 
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
+      dplyr::mutate(Cohort = "Global (TCGA)")
+      
+    local_plotting_prep <- local_data %>%
+      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
+      dplyr::mutate(Cohort = "Local (LUMHS)")
+      
+    # Safely mask transfused Hb entries in the plot matrix to match your Tier 2 selection rules
+    if("transfused_within_14_days" %in% colnames(local_data)) {
+      local_plotting_prep$hemoglobin_level[local_data$transfused_within_14_days == "yes" | local_data$transfused_within_14_days == 1] <- NA
+    }
+    
+    combined_cohorts_df <- rbind(global_plotting_prep, local_plotting_prep)
 
     # Format data to long structure for boxplot faceting
     plotting_df <- combined_cohorts_df %>%
@@ -281,7 +323,8 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     
     ggplot2::ggsave("Figure_2_Cross_Population_Comparison.png", plot = comp_boxplot, width = 11, height = 5, dpi = 300)
     message("Saved Figure 2.")
-     # --- Section 11: Local cohort survival analysis (optional module) ---
+    
+    # --- Section 11: Local cohort survival analysis (optional module) ---
     run_local_survival <- FALSE
     
     if("local_time_days" %in% colnames(local_data) & "local_status" %in% colnames(local_data)) {
