@@ -6,7 +6,7 @@
 # ==============================================================================
 
 message("Checking dependencies...")
-options(repos = c(CRAN = "https://posit.co"))
+options(repos = c(CRAN = "https://r-project.org"))
 
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
@@ -85,25 +85,25 @@ survival_base <- clinical_data_raw %>%
 blast_idx <- grep("blast", all_cols, ignore.case = TRUE)
 b_col <- if(length(blast_idx) > 0) all_cols[blast_idx[1]] else "fallback_na"
 
-myeloid_idx <- grep("myeloid|peripheral", all_cols, ignore.case = TRUE)
-m_col <- if(length(myeloid_idx) > 0) all_cols[myeloid_idx[1]] else "fallback_na"
+wbc_idx <- grep("wbc|white_blood|leukocyte", all_cols, ignore.case = TRUE)
+m_col <- if(length(wbc_idx) > 0) all_cols[wbc_idx[1]] else "fallback_na"
 
 hb_idx <- grep("hb|hemoglobin", all_cols, ignore.case = TRUE)
 hb_col <- if(length(hb_idx) > 0) all_cols[hb_idx[1]] else "fallback_na"
 
 extracted_blast   <- as.numeric(clinical_data_raw[[b_col]])
-extracted_myeloid <- as.numeric(clinical_data_raw[[m_col]])
+extracted_wbc     <- as.numeric(clinical_data_raw[[m_col]])
 extracted_hb      <- as.numeric(clinical_data_raw[[hb_col]])
 
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
     bone_marrow_blast = extracted_blast,
-    peripheral_blood_myeloid = extracted_myeloid,
+    peripheral_blood_myeloid = extracted_wbc, 
     hemoglobin_level = extracted_hb
   ) %>%
   dplyr::select(primary_id, bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level)
 
-message("Part 1 processing completed successfully. Base environment is locked.")
+message("Part 1 processing completed successfully. Native WBC profiles locked.")
 # ==============================================================================
 # Thesis Project: 15-Gene Hypoxia Model Validation
 # Institution: LUMHS MPhil Research Track
@@ -187,19 +187,23 @@ mv_formula_string <- paste("survival::Surv(time_days, status_numeric) ~", paste(
 multivariable_model <- survival::coxph(as.formula(mv_formula_string), data = tcga_master_data)
 print(summary(multivariable_model))
 
-message("Generating high-resolution global survival curve plot...")
+print("--- Logistic Regression: Reconstructing Clinical Hypoxia Surrogates ---")
+tcga_master_data$Is_High_Hypoxia <- ifelse(tcga_master_data$hypoxia_group == "High Risk Hypoxia", 1, 0)
+surrogate_model <- glm(Is_High_Hypoxia ~ bone_marrow_blast + hemoglobin_level + peripheral_blood_myeloid, 
+                       data = tcga_master_data, family = binomial)
+print(summary(surrogate_model))
 
+message("Generating high-resolution global survival curve plot...")
 final_plot <- survminer::ggsurvplot(
   final_fit, data = tcga_master_data, pval = TRUE, conf.int = TRUE,
   risk.table = TRUE, palette = c("#E41A1C", "#377EB8"), 
   legend.labs = c("High Risk Hypoxia", "Low Risk Hypoxia"),
   xlab = "Survival Time (Days)", ylab = "Survival Probability",
   title = "Cox-Weighted 15-Gene Buffa Hypoxia Prognostic Model",
+  break.time.by = 500, 
   risk.table.height = 0.22, tables.theme = survminer::theme_cleantable()
 )
 
-# Open a direct high-resolution file stream explicitly before calling the arranger tool.
-# This prevents the silent layout drop and guarantees both curve and table print together.
 png("Figure_1_Survival_Kinetics.png", width = 2400, height = 2100, res = 300)
 survminer::arrange_ggsurvplots(list(final_plot), print = TRUE, ncol = 1, nrow = 1)
 dev.off()
@@ -209,7 +213,6 @@ write.csv(tcga_master_data, "TCGA_Global_Survival_Reference_Data.csv", row.names
 
 if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
   local_data <- read.csv("LUMHS_Local_AML_Cohort.csv", na.strings = c("NA", " ", "", "."))
-  
   colnames(local_data) <- tolower(colnames(local_data))
   required_columns <- c("bone_marrow_blast", "peripheral_blood_myeloid", "hemoglobin_level")
   missing_cols <- setdiff(required_columns, colnames(local_data))
@@ -254,177 +257,170 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     combined_hb_df <- rbind(global_hb_df, local_hb_df) %>%
       dplyr::mutate(Cohort = as.factor(Cohort))
     
-    if (all(is.na(combined_cellular_df$peripheral_blood_myeloid[combined_cellular_df$Cohort == "Global (TCGA)"]))) {
-      message("--- NOTE: Global (TCGA) mature peripheral myeloid metrics are naturally blank (NA) in the repository. ---")
-      message("--- Cellular cross-population audits will focus on the complete bone marrow blast architecture layers. ---")
-    }
-    
-    blast_wilcox <- wilcox.test(bone_marrow_blast ~ Cohort, data = combined_cellular_df, exact = FALSE)
-    hb_wilcox    <- wilcox.test(hemoglobin_level ~ Cohort, data = combined_hb_df, exact = FALSE)
+    blast_wilcox    <- wilcox.test(bone_marrow_blast ~ Cohort, data = combined_cellular_df, exact = FALSE)
+    hb_wilcox       <- wilcox.test(hemoglobin_level ~ Cohort, data = combined_hb_df, exact = FALSE)
+    myeloid_wilcox  <- wilcox.test(peripheral_blood_myeloid ~ Cohort, data = combined_cellular_df, exact = FALSE)
     
     print("--- Cross-Population Non-Parametric Comparison Results (Mann-Whitney U) ---")
     print(blast_wilcox)
     print(hb_wilcox)
-    
-    valid_global_myeloid <- sum(!is.na(combined_cellular_df$peripheral_blood_myeloid[combined_cellular_df$Cohort == "Global (TCGA)"]))
-    if(valid_global_myeloid > 2) {
-      myeloid_wilcox <- wilcox.test(peripheral_blood_myeloid ~ Cohort, data = combined_cellular_df, exact = FALSE)
-      print(myeloid_wilcox)
-    } else {
-      message("Skipping myeloid cohort comparison: Insufficient global baseline variance detected.")
-    }
+    print(myeloid_wilcox)
     
     print("--- Local cohort Spearman correlation results ---")
     local_spearman <- cor.test(local_cellular_df[["bone_marrow_blast"]], 
                                local_cellular_df[["peripheral_blood_myeloid"]], 
                                method = "spearman", exact = FALSE)
     print(local_spearman)
+  }
+}
 # ==============================================================================
 # Thesis Project: 15-Gene Hypoxia Model Validation
 # Institution: LUMHS MPhil Research Track
 # Author: Dr. Aqeel Ahmed (MD)
 # Part 4: Advanced Visualizations, Sample Attrition Tracking, and Table 1 Export
+# Fixed: Eliminated stray trailing bracket bugs
 # ==============================================================================
 
-    comp_scatterplot <- ggplot2::ggplot(local_cellular_df, aes(x = bone_marrow_blast, y = peripheral_blood_myeloid)) +
-      ggplot2::geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
-      ggplot2::geom_smooth(method = "loess", formula = y ~ x, color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
-      ggplot2::theme_bw(base_size = 12) +
-      ggplot2::theme(
-        plot.title = ggplot2::element_text(face = "bold", size = 12, hjust = 0.5),
-        plot.subtitle = ggplot2::element_text(size = 10, hjust = 0.5, face = "italic"),
-        panel.grid.minor = ggplot2::element_blank()
-      ) +
-      ggplot2::labs(
-        title = "Local Marrow Crowding Dynamics",
-        subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (P = ", format.pval(local_spearman$p.value, digits = 4), ")"),
-        x = "Bone Marrow Blast Infiltration (%)",
-        y = "Peripheral Blood Myeloid Cells (%)"
-      )
+comp_scatterplot <- ggplot2::ggplot(local_cellular_df, aes(x = bone_marrow_blast, y = peripheral_blood_myeloid)) +
+  ggplot2::geom_point(color = "#E74C3C", alpha = 0.6, size = 2.5) +
+  ggplot2::geom_smooth(method = "loess", formula = y ~ x, color = "#2C3E50", se = TRUE, fill = "#BDC3C7", alpha = 0.3) +
+  ggplot2::theme_bw(base_size = 12) +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold", size = 12, hjust = 0.5),
+    plot.subtitle = ggplot2::element_text(size = 10, hjust = 0.5, face = "italic"),
+    panel.grid.minor = ggplot2::element_blank()
+  ) +
+  ggplot2::labs(
+    title = "Local Marrow Crowding Dynamics",
+    subtitle = paste0("Spearman r = ", round(local_spearman$estimate, 2), " (P = ", format.pval(local_spearman$p.value, digits = 4), ")"),
+    x = "Bone Marrow Blast Infiltration (%)",
+    y = "Total White Blood Cell Count (x10^9/L)"
+  )
 
-    ggplot2::ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
-    message("Saved Figure 3.")
+ggplot2::ggsave("Figure_3_Local_Marrow_Crowding.png", plot = comp_scatterplot, width = 7, height = 5, dpi = 300)
+message("Saved Figure 3.")
 
-    global_plotting_prep <- tcga_master_data %>% 
-      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
-      dplyr::mutate(Cohort = "Global (TCGA)")
-      
-    local_plotting_prep <- local_data %>%
-      dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
-      dplyr::mutate(Cohort = "Local (LUMHS)")
-      
-    if("transfused_within_14_days" %in% colnames(local_data)) {
-      local_transfusion_clean <- tolower(trimws(as.character(local_data$transfused_within_14_days)))
-      local_plotting_prep$hemoglobin_level[local_transfusion_clean == "yes" | local_transfusion_clean == "1" | local_transfusion_clean == "true"] <- NA
-    }
-    
-    combined_cohorts_df <- rbind(global_plotting_prep, local_plotting_prep)
+global_plotting_prep <- tcga_master_data %>% 
+  dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
+  dplyr::mutate(Cohort = "Global (TCGA)")
+  
+local_plotting_prep <- local_data %>%
+  dplyr::select(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level) %>%
+  dplyr::mutate(Cohort = "Local (LUMHS)")
+  
+if("transfused_within_14_days" %in% colnames(local_data)) {
+  local_transfusion_clean <- tolower(trimws(as.character(local_data$transfused_within_14_days)))
+  local_plotting_prep$hemoglobin_level[local_transfusion_clean == "yes" | local_transfusion_clean == "1" | local_transfusion_clean == "true"] <- NA
+}
 
-    plotting_df <- combined_cohorts_df %>%
-      tidyr::pivot_longer(cols = c(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level), 
-                          names_to = "Parameter", values_to = "value") %>%
-      dplyr::filter(!is.na(value)) 
-    
-    panel_labels <- c(
-      "bone_marrow_blast" = "Bone Marrow Blast Infiltration (%)",
-      "peripheral_blood_myeloid" = "Peripheral Blood Myeloid Cells (%)",
-      "hemoglobin_level" = "Baseline Hemoglobin Level (g/dL)"
-    )
-    
-    comp_boxplot <- ggplot2::ggplot(plotting_df, aes(x = Cohort, y = value, fill = Cohort)) +
-      ggplot2::geom_boxplot(alpha = 0.7, outlier.shape = 16, width = 0.5, color = "#2C3E50") +
-      ggplot2::geom_jitter(width = 0.15, alpha = 0.3, size = 1.5, aes(color = Cohort)) +
-      ggplot2::facet_wrap(~Parameter, scales = "free_y", labeller = ggplot2::as_labeller(panel_labels), ncol = 3) +
-      ggplot2::scale_fill_manual(values = c("#3498DB", "#E74C3C")) +    
-      ggplot2::scale_color_manual(values = c("#2980B9", "#C0392B")) +  
-      ggplot2::theme_bw(base_size = 12) +
-      ggplot2::theme(
-        strip.background = ggplot2::element_rect(fill = "#ECF0F1", color = "#BDC3C7"),
-        strip.text = ggplot2::element_text(face = "bold", color = "#2C3E50", size = 10),
-        axis.title.x = ggplot2::element_blank(),
-        axis.text.x = ggplot2::element_text(face = "bold", size = 11),
-        legend.position = "none",
-        plot.title = ggplot2::element_text(face = "bold", size = 13, hjust = 0.5),
-        panel.grid.minor = ggplot2::element_blank()
-      ) +
-      ggplot2::labs(
-        title = "Cross-Population Bio-Audit: Global Reference vs. Local Sindh Cohort",
-        y = "Tissue Compartment Metrics / Clinical Density"
-      )
-    
-    ggplot2::ggsave("Figure_2_Cross_Population_Comparison.png", plot = comp_boxplot, width = 11, height = 5, dpi = 300)
-    message("Saved Figure 2.")
-    
-    run_local_survival <- FALSE
-    if("local_time_days" %in% colnames(local_data) & "local_status" %in% colnames(local_data)) {
-      clean_survival_subset <- local_data %>%
-        dplyr::select(patient_id, bone_marrow_blast, local_time_days, local_status) %>%
-        dplyr::filter(!is.na(local_time_days) & !is.na(local_status) & !is.na(bone_marrow_blast))
-      if(nrow(clean_survival_subset) >= 15) { 
-        run_local_survival = TRUE
-      }
-    }
-    
-    if(run_local_survival) {
-      message("Survival indices confirmed. Running local survival module...")
-      median_blast <- median(clean_survival_subset$bone_marrow_blast, na.rm = TRUE)
-      clean_survival_subset$blast_group <- ifelse(clean_survival_subset$bone_marrow_blast > median_blast, 
-                                                   "High Blast Load", "Low Blast Load")
-      
-      local_fit <- survival::survfit(survival::Surv(local_time_days, local_status) ~ blast_group, 
-                                     data = clean_survival_subset)
-      
-      local_survival_plot <- survminer::ggsurvplot(
-        local_fit, data = clean_survival_subset, pval = TRUE, conf.int = FALSE,
-        risk.table = TRUE, palette = c("#D35400", "#27AE60"),
-        legend.labs = c("High Blast Load", "Low Blast Load"),
-        xlab = "Follow-up Duration (Days)", ylab = "Survival Probability",
-        title = "LUMHS Local Validation Cohort Internal Survival Kinetics",
-        risk.table.height = 0.22, tables.theme = survminer::theme_cleantable()
-      )
-      
-      png("Figure_4_Local_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
-      print(local_survival_plot)
-      dev.off()
-      message("Saved Figure 4.")
-    } else {
-      message("Local survival parameters insufficient. Skipping Figure 4 extraction.")
-    }
-    
-    message("Compiling baseline summary data...")
-    if("hemoglobin_level" %in% colnames(local_data)) {
-      local_data$anemia_status <- ifelse(local_data$hemoglobin_level < 11, "Anemic", "Normal")
-    } else {
-      local_data$anemia_status = "Not Recorded"
-    }
+combined_cohorts_df <- rbind(global_plotting_prep, local_plotting_prep)
 
-    evaluable_hb_count <- sum(!is.na(local_data$hemoglobin_level))
-    anemia_percentage_string <- if(evaluable_hb_count > 0) {
-      paste0(sum(local_data$anemia_status == "Anemic", na.rm = TRUE), " (", 
-             round((sum(local_data$anemia_status == "Anemic", na.rm = TRUE) / evaluable_hb_count) * 100, 1), "%)")
-    } else {
-      "0 (0%)"
-    }
+plotting_df <- combined_cohorts_df %>%
+  tidyr::pivot_longer(cols = c(bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level), 
+                      names_to = "Parameter", values_to = "value") %>%
+  dplyr::filter(!is.na(value)) 
 
-    clinical_summary <- data.frame(
-      Metric = c("Total Patients (n)", 
-                 "Mean BM Blast Infiltration (%)", 
-                 "Mean Peripheral Myeloid Cells (%)", 
-                 "Patients presenting with Anemia Baseline (%)"),
-      Value = c(
-        nrow(local_data),
-        round(mean(local_data$bone_marrow_blast, na.rm = TRUE), 2),
-        round(mean(local_data$peripheral_blood_myeloid, na.rm = TRUE), 2),
-        anemia_percentage_string
-      )
-    )
+panel_labels <- c(
+  "bone_marrow_blast" = "Bone Marrow Blast Infiltration (%)",
+  "peripheral_blood_myeloid" = "Total White Blood Cell Count (x10^9/L)",
+  "hemoglobin_level" = "Baseline Hemoglobin Level (g/dL)"
+)
 
-    print(clinical_summary)
-    write.csv(clinical_summary, "Table_1_Clinical_Summary.csv", row.names = FALSE)
-    message("Saved Table 1 summary matrix.")
+comp_boxplot <- ggplot2::ggplot(plotting_df, aes(x = Cohort, y = value, fill = Cohort)) +
+  ggplot2::geom_boxplot(alpha = 0.7, outlier.shape = 16, width = 0.5, color = "#2C3E50") +
+  ggplot2::geom_jitter(width = 0.15, alpha = 0.3, size = 1.5, aes(color = Cohort)) +
+  ggplot2::facet_wrap(~Parameter, scales = "free_y", labeller = ggplot2::as_labeller(panel_labels), ncol = 3) +
+  ggplot2::scale_fill_manual(values = c("#3498DB", "#E74C3C")) +    
+  ggplot2::scale_color_manual(values = c("#2980B9", "#C0392B")) +  
+  ggplot2::theme_bw(base_size = 12) +
+  ggplot2::theme(
+    strip.background = ggplot2::element_rect(fill = "#ECF0F1", color = "#BDC3C7"),
+    strip.text = ggplot2::element_text(face = "bold", color = "#2C3E50", size = 10),
+    axis.title.x = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(face = "bold", size = 11),
+    legend.position = "none",
+    plot.title = ggplot2::element_text(face = "bold", size = 13, hjust = 0.5),
+    panel.grid.minor = ggplot2::element_blank()
+  ) +
+  ggplot2::labs(
+    title = "Cross-Population Bio-Audit: Global Reference vs. Local Sindh Cohort",
+    y = "Tissue Compartment Metrics / Clinical Density"
+  )
+
+ggplot2::ggsave("Figure_2_Cross_Population_Comparison.png", plot = comp_boxplot, width = 11, height = 5, dpi = 300)
+message("Saved Figure 2 cleanly with synchronized box plots.")
+
+run_local_survival <- FALSE
+if("local_time_days" %in% colnames(local_data) & "local_status" %in% colnames(local_data)) {
+  clean_survival_subset <- local_data %>%
+    dplyr::select(patient_id, bone_marrow_blast, local_time_days, local_status) %>%
+    dplyr::filter(!is.na(local_time_days) & !is.na(local_status) & !is.na(bone_marrow_blast))
+  if(nrow(clean_survival_subset) >= 15) { 
+    run_local_survival = TRUE
   }
 }
+
+if(run_local_survival) {
+  message("Survival indices confirmed. Running local survival module...")
+  median_blast <- median(clean_survival_subset$bone_marrow_blast, na.rm = TRUE)
+  clean_survival_subset$blast_group <- ifelse(clean_survival_subset$bone_marrow_blast > median_blast, 
+                                               "High Blast Load", "Low Blast Load")
+  
+  local_fit <- survival::survfit(survival::Surv(local_time_days, local_status) ~ blast_group, 
+                                 data = clean_survival_subset)
+  
+  local_survival_plot <- survminer::ggsurvplot(
+    local_fit, data = clean_survival_subset, pval = TRUE, conf.int = FALSE,
+    risk.table = TRUE, palette = c("#D35400", "#27AE60"),
+    legend.labs = c("High Blast Load", "Low Blast Load"),
+    xlab = "Follow-up Duration (Days)", ylab = "Survival Probability",
+    title = "LUMHS Local Validation Cohort Internal Survival Kinetics",
+    break.time.by = 100, 
+    risk.table.height = 0.22, tables.theme = survminer::theme_cleantable()
+  )
+  
+  png("Figure_4_Local_Survival_Kinetics.png", width = 2400, height = 1800, res = 300)
+  print(local_survival_plot)
+  dev.off()
+  message("Saved Figure 4.")
+} else {
+  message("Local survival parameters insufficient. Skipping Figure 4 extraction.")
+}
+
+message("Compiling baseline summary data...")
+if("hemoglobin_level" %in% colnames(local_data)) {
+  local_data$anemia_status <- ifelse(local_data$hemoglobin_level < 11, "Anemic", "Normal")
+} else {
+  local_data$anemia_status = "Not Recorded"
+}
+
+evaluable_hb_count <- sum(!is.na(local_data$hemoglobin_level))
+anemia_percentage_string <- if(evaluable_hb_count > 0) {
+  paste0(sum(local_data$anemia_status == "Anemic", na.rm = TRUE), " (", 
+         round((sum(local_data$anemia_status == "Anemic", na.rm = TRUE) / evaluable_hb_count) * 100, 1), "%)")
+} else {
+  "0 (0%)"
+}
+
+clinical_summary <- data.frame(
+  Metric = c("Total Patients (n)", 
+             "Mean BM Blast Infiltration (%)", 
+             "Mean Baseline Leukocyte Count (x10^9/L)", 
+             "Patients presenting with Anemia Baseline (%)"),
+  Value = c(
+    nrow(local_data),
+    round(mean(local_data$bone_marrow_blast, na.rm = TRUE), 2),
+    round(mean(local_data$peripheral_blood_myeloid, na.rm = TRUE), 2),
+    anemia_percentage_string
+  )
+)
+
+print(clinical_summary)
+write.csv(clinical_summary, "Table_1_Clinical_Summary.csv", row.names = FALSE)
+message("Saved Table 1 summary matrix.")
+
 save.image(file = "LUMHS_Hypoxia_Project_Processed_Outputs.RData")
 message("Pipeline execution completed successfully.")
+
 
 
