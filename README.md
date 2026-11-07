@@ -89,6 +89,10 @@ Upon successful pipeline completion, the engine exports these five publication-r
 *   `Figure_1_Survival_Kinetics.png`: High-resolution Cox-weighted global survival timeline curves.
 *   `Figure_2_Cross_Population_Comparison.png`: Facet-wrapped cross-population distribution boxplots.
 *   `Figure_3_Local_Marrow_Crowding.png`: LOESS-smoothed scatter matrix tracking compartment crowding.
+
+"Data Status Note: The file LUMHS_Local_AML_Cohort.csv currently contains the production-ready database schema headers. Prospective clinical field enrollment is actively running at the Liaquat University of Medical and Health Sciences (LUMHS) hospital counters. The file will dynamically populate with real-world patient matrices upon completion of the prospective validation track."
+
+*   
 *   `Figure_4_Local_Survival_Kinetics.png`: Local cohort internal Kaplan-Meier validation kinetics (if $n \geq 15$).
 *   `Table_1_Clinical_Summary.csv`: Excel-readable aggregated descriptive clinical snapshot matrix.
 
