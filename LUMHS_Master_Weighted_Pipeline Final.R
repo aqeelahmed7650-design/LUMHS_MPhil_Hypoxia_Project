@@ -317,6 +317,27 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     print(local_spearman)
   }
 }
+# [OPTIONAL] 1,000-Iteration Bootstrap Internal Validation (C-Index)
+set.seed(2027)
+c_indices <- numeric(1000)
+
+for(b in 1:1000) {
+  boot_idx <- sample(seq_len(nrow(tcga_master_data)), replace = TRUE)
+  boot_fit <- survival::coxph(survival::Surv(time_days, status_numeric) ~ weighted_hypoxia_score, 
+                              data = tcga_master_data[boot_idx, ])
+  # Evaluate discrimination on out-of-bag (unseen) patients
+  oob_data <- tcga_master_data[-unique(boot_idx), ]
+  if(nrow(oob_data) > 10) {
+    c_indices[b] <- survival::concordance(survival::Surv(time_days, status_numeric) ~ predict(boot_fit, newdata = oob_data), 
+                                          data = oob_data)$concordance
+  }
+}
+
+print(sprintf("1000-Bootstrap Out-of-Bag C-Index = %.3f (95%% CI: %.3f - %.3f)", 
+              mean(c_indices, na.rm = TRUE), 
+              quantile(c_indices, 0.025, na.rm = TRUE), 
+              quantile(c_indices, 0.975, na.rm = TRUE)))
+
 # ==============================================================================
 # Thesis Project: 15-Gene Hypoxia Model Validation
 # Institution: LUMHS MPhil Research Track
