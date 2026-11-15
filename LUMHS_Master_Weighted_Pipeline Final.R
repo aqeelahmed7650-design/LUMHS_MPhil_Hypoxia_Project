@@ -18,7 +18,7 @@ if (length(new_bioc) > 0) {
   BiocManager::install(new_bioc, update = FALSE, ask = FALSE)
 }
 
-required_cran <- c("dplyr", "tidyr", "stringr", "survival", "survminer", "ggplot2")
+required_cran <- c("dplyr", "tidyr", "stringr", "survival", "survminer", "ggplot2", "pROC")
 new_cran <- required_cran[!(required_cran %in% installed.packages()[, "Package"])]
 if (length(new_cran) > 0) {
   install.packages(new_cran)
@@ -33,6 +33,7 @@ library(stringr)
 library(survival)
 library(survminer)
 library(ggplot2)
+library(pROC)
 
 set.seed(2027)
 
@@ -64,6 +65,7 @@ message(paste("Matched", nrow(b15_matrix), "out of 15 target signature loci."))
 
 all_cols <- colnames(clinical_data_raw)
 clinical_data_raw$fallback_na <- as.numeric(NA)
+clinical_data_raw$fallback_char_na <- as.character(NA)
 
 age_idx <- grep("age|birth|diagnostic_age", all_cols, ignore.case = TRUE)
 age_col <- if(length(age_idx) > 0) all_cols[age_idx[1]] else "fallback_na"
@@ -71,6 +73,10 @@ age_col <- if(length(age_idx) > 0) all_cols[age_idx[1]] else "fallback_na"
 raw_age_vector <- abs(as.numeric(clinical_data_raw[[age_col]]))
 clinical_data_raw$extracted_age_years <- ifelse(!is.na(raw_age_vector) & raw_age_vector > 150, 
                                                  raw_age_vector / 365.25, raw_age_vector)
+
+sex_idx <- grep("^gender$|^sex$", all_cols, ignore.case = TRUE)
+sex_col <- if(length(sex_idx) > 0) all_cols[sex_idx[1]] else "fallback_char_na"
+extracted_sex <- as.character(clinical_data_raw[[sex_col]])
 
 survival_base <- clinical_data_raw %>%
   dplyr::select(primary_id, days_to_death, days_to_last_followup, vital_status, extracted_age_years) %>%
@@ -97,11 +103,13 @@ extracted_hb      <- as.numeric(clinical_data_raw[[hb_col]])
 
 aml_clean_clinical <- clinical_data_raw %>%
   dplyr::mutate(
+    age_years = extracted_age_years,
+    sex = extracted_sex,
     bone_marrow_blast = extracted_blast,
     peripheral_blood_myeloid = extracted_wbc, 
     hemoglobin_level = extracted_hb
   ) %>%
-  dplyr::select(primary_id, bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level)
+  dplyr::select(primary_id, age_years, sex, bone_marrow_blast, peripheral_blood_myeloid, hemoglobin_level)
 
 message("Part 1 processing completed successfully. Native WBC profiles locked.")
 # ==============================================================================
@@ -168,6 +176,10 @@ weighted_scores <- cox_train_df %>%
 tcga_master_data <- dplyr::inner_join(aml_clean_clinical, weighted_scores, by = "primary_id") %>%
   dplyr::inner_join(survival_base, by = "primary_id")
 
+if("age_years.y" %in% colnames(tcga_master_data)) {
+  tcga_master_data$age_years <- tcga_master_data$age_years.y
+}
+
 median_weighted <- median(tcga_master_data[["weighted_hypoxia_score"]], na.rm = TRUE)
 tcga_master_data[["hypoxia_group"]] <- ifelse(tcga_master_data[["weighted_hypoxia_score"]] > median_weighted, 
                                                "High Risk Hypoxia", "Low Risk Hypoxia")
@@ -192,6 +204,18 @@ tcga_master_data$Is_High_Hypoxia <- ifelse(tcga_master_data$hypoxia_group == "Hi
 surrogate_model <- glm(Is_High_Hypoxia ~ bone_marrow_blast + hemoglobin_level + peripheral_blood_myeloid, 
                        data = tcga_master_data, family = binomial)
 print(summary(surrogate_model))
+
+# [ADDED] pROC Discrimination Metrics (AUC & 95% CI) for Surrogate Model
+surrogate_complete <- tcga_master_data %>%
+  dplyr::filter(!is.na(bone_marrow_blast) & !is.na(hemoglobin_level) & !is.na(peripheral_blood_myeloid))
+
+if(nrow(surrogate_complete) >= 10) {
+  surrogate_complete$pred_prob <- predict(surrogate_model, newdata = surrogate_complete, type = "response")
+  surrogate_roc <- pROC::roc(surrogate_complete$Is_High_Hypoxia, surrogate_complete$pred_prob, quiet = TRUE)
+  surrogate_ci  <- pROC::ci.auc(surrogate_roc)
+  print("--- Surrogate Model pROC Discrimination Metrics ---")
+  print(sprintf("AUC = %.3f (95%% CI: %.3f - %.3f)", as.numeric(pROC::auc(surrogate_roc)), surrogate_ci[1], surrogate_ci[3]))
+}
 
 message("Generating high-resolution global survival curve plot...")
 final_plot <- survminer::ggsurvplot(
@@ -265,6 +289,26 @@ if(file.exists("LUMHS_Local_AML_Cohort.csv")) {
     print(blast_wilcox)
     print(hb_wilcox)
     print(myeloid_wilcox)
+    
+    # [ADDED] Multivariable Age & Sex Sensitivity Check
+    if("age" %in% colnames(local_data) && "sex" %in% colnames(local_data)) {
+      global_demo_df <- tcga_master_data %>%
+        dplyr::select(age = age_years, sex, peripheral_blood_myeloid, bone_marrow_blast) %>%
+        dplyr::mutate(Cohort = "Global (TCGA)", sex = tolower(trimws(as.character(sex))))
+      
+      local_demo_df <- local_data %>%
+        dplyr::select(age, sex, peripheral_blood_myeloid, bone_marrow_blast) %>%
+        dplyr::mutate(Cohort = "Local (LUMHS)", sex = tolower(trimws(as.character(sex))))
+      
+      combined_demo_df <- rbind(global_demo_df, local_demo_df) %>%
+        dplyr::filter(!is.na(peripheral_blood_myeloid) & !is.na(age) & !is.na(sex))
+      
+      if(nrow(combined_demo_df) >= 15) {
+        print("--- Sensitivity Check: Age & Sex Adjusted Cohort Disparity (Log10 WBC) ---")
+        adj_wbc_model <- lm(log10(peripheral_blood_myeloid + 1) ~ Cohort + age + sex, data = combined_demo_df)
+        print(summary(adj_wbc_model))
+      }
+    }
     
     print("--- Local cohort Spearman correlation results ---")
     local_spearman <- cor.test(local_cellular_df[["bone_marrow_blast"]], 
@@ -421,6 +465,4 @@ message("Saved Table 1 summary matrix.")
 
 save.image(file = "LUMHS_Hypoxia_Project_Processed_Outputs.RData")
 message("Pipeline execution completed successfully.")
-
-
 
